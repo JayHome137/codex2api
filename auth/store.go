@@ -249,11 +249,15 @@ type Account struct {
 	GrokLivePlanObservedAt time.Time
 	GrokLivePlanExpiresAt  time.Time
 	GrokLivePlanKnown      bool
-	GrokAccessAllowed      *bool
-	GrokAccessExpiresAt    time.Time
-	GrokBillingExhausted   bool
-	GrokBillingExpiresAt   time.Time
-	GrokFactsGeneration    int64
+	// GrokDisplayPlan is settings.subscription_tier_display. Like the display
+	// column it is a hint only; it never passes an authorization gate.
+	GrokDisplayPlan          string
+	GrokDisplayPlanExpiresAt time.Time
+	GrokAccessAllowed        *bool
+	GrokAccessExpiresAt      time.Time
+	GrokBillingExhausted     bool
+	GrokBillingExpiresAt     time.Time
+	GrokFactsGeneration      int64
 	// grokRouting 是按账号、凭据 generation 隔离的模型目录与协议能力快照。
 	// 目录本身由控制面同步并持久化；执行路径只读取这份不可变副本，不现场访问上游。
 	grokRouting     *GrokRoutingState

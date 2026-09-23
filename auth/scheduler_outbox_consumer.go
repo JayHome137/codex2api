@@ -508,6 +508,8 @@ func (s *Store) applyPersistentAccountSnapshot(dst, src *Account, enabled bool) 
 	dst.GrokLivePlanObservedAt = src.GrokLivePlanObservedAt
 	dst.GrokLivePlanExpiresAt = src.GrokLivePlanExpiresAt
 	dst.GrokLivePlanKnown = src.GrokLivePlanKnown
+	dst.GrokDisplayPlan = src.GrokDisplayPlan
+	dst.GrokDisplayPlanExpiresAt = src.GrokDisplayPlanExpiresAt
 	dst.GrokAccessAllowed = cloneBoolPtr(src.GrokAccessAllowed)
 	dst.GrokAccessExpiresAt = src.GrokAccessExpiresAt
 	dst.GrokBillingExhausted = src.GrokBillingExhausted
