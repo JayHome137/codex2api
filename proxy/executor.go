@@ -538,7 +538,8 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 
 	// Payload 规则改写：在 WS/HTTP 分叉前统一应用，两条上游路径共享改写结果。
 	// 生图请求跳过——其 instructions/工具由网关自行构造，改写会破坏桥接协议。
-	if !responsesBodyRequestsImageGeneration(requestBody) {
+	detectorProbe := isCodexDetectorRequest(ctx)
+	if !responsesBodyRequestsImageGeneration(requestBody) && !detectorProbe {
 		RecordObservedInstructions(requestBody, headers)
 		requestBody = ApplyPayloadRulesToBody(requestBody, gjson.GetBytes(requestBody, "model").String(), headers, PayloadRuleIdentityFromContext(ctx))
 		// 规则改写发生在各 handler 的 service_tier 净化之后，规则注入的 flex/auto 等
@@ -565,10 +566,13 @@ func ExecuteRequest(ctx context.Context, account *auth.Account, requestBody []by
 	if account.IsCodexAgentIdentity() {
 		wantWebsocket = false
 	}
-	telemetryAttempt := beginCodexTelemetry(codexTelemetryRequest{
-		account: account, body: requestBody, sessionID: sessionID, proxyOverride: proxyOverride,
-		apiKey: apiKey, deviceCfg: deviceCfg, headers: headers,
-	})
+	var telemetryAttempt *codexTelemetryAttempt
+	if !detectorProbe {
+		telemetryAttempt = beginCodexTelemetry(codexTelemetryRequest{
+			account: account, body: requestBody, sessionID: sessionID, proxyOverride: proxyOverride,
+			apiKey: apiKey, deviceCfg: deviceCfg, headers: headers,
+		})
+	}
 	defer func() { telemetryAttempt.observeResult(upstreamResponse, upstreamErr) }()
 	poolRouteKey := ""
 	if wantWebsocket {
