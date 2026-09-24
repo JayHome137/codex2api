@@ -7545,6 +7545,18 @@ func (s *Store) WaitForSessionAvailable(ctx context.Context, key string, timeout
 	return s.WaitForSessionAvailableWithFilter(ctx, key, timeout, apiKeyID, exclude, nil)
 }
 
+// HasDispatchCandidate reports whether any locally known account could serve
+// the request once a concurrency slot frees up. Saturation is ignored, so a
+// false result means a queue wait with this exclude set can only succeed if an
+// account is added or recovers; retry loops use it to recognize that their own
+// request-local exclusions are what is blocking selection.
+func (s *Store) HasDispatchCandidate(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, preserveBinding bool, policy DispatchPolicy) bool {
+	if preserveBinding {
+		return s.hasContinuationCandidateWithDispatch(key, apiKeyID, exclude, filter, policy)
+	}
+	return s.hasDispatchCandidateWithDispatch(apiKeyID, exclude, filter, policy)
+}
+
 func (s *Store) hasDispatchCandidateWithFilter(apiKeyID int64, exclude map[int64]bool, filter AccountFilter) bool {
 	return s.hasDispatchCandidateWithDispatch(apiKeyID, exclude, filter, DispatchPolicyStandard)
 }
@@ -7804,10 +7816,7 @@ func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key strin
 		return nil, "", SessionAffinityGuard{}, ctx.Err()
 	}
 	hasCandidate := func() bool {
-		if preserveBinding {
-			return s.hasContinuationCandidateWithDispatch(key, apiKeyID, exclude, filter, policy)
-		}
-		return s.hasDispatchCandidateWithDispatch(apiKeyID, exclude, filter, policy)
+		return s.HasDispatchCandidate(key, apiKeyID, exclude, filter, preserveBinding, policy)
 	}
 	// Indexed/shadow also wait on an empty snapshot: another replica may add
 	// an account and notify this process through the durable outbox.
