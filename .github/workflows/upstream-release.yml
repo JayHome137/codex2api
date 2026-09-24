@@ -27,6 +27,10 @@ jobs:
       github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      should_release: ${{ steps.promote.outputs.should_release }}
+      release_tag: ${{ steps.promote.outputs.release_tag }}
+      source_sha: ${{ steps.promote.outputs.source_sha }}
     steps:
       - name: Checkout validated main commit
         uses: actions/checkout@v5
@@ -35,6 +39,7 @@ jobs:
           fetch-depth: 0
 
       - name: Verify checks and promote the upstream tag
+        id: promote
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -50,6 +55,8 @@ jobs:
 
           echo "source_sha=$SOURCE_SHA"
           echo "upstream_tag=$upstream_tag"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
 
           # Both push checks must be successful for this exact main commit.
           runs_json=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SOURCE_SHA}&event=push&per_page=100")
@@ -98,13 +105,20 @@ jobs:
             echo "Remote tag ${upstream_tag} already points to this validated commit."
           fi
 
-          gh workflow run release.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref "$SOURCE_SHA" \
-            -f "release_tag=${upstream_tag}"
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
           {
             echo "### Release promotion"
             echo
             echo "Validated main commit `${SOURCE_SHA}` is being published as `${upstream_tag}`."
-            echo "The release asset workflow was dispatched explicitly after the tag check."
+            echo "The release asset workflow will run as the next job after the tag check."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  publish-release:
+    needs: promote-validated-main
+    if: needs.promote-validated-main.outputs.should_release == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      release_tag: ${{ needs.promote-validated-main.outputs.release_tag }}
+      source_ref: ${{ needs.promote-validated-main.outputs.source_sha }}

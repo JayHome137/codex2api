@@ -10,6 +10,20 @@ on:
         description: 'Existing tag to build and publish, for example v3.0.1'
         required: true
         type: string
+      source_ref:
+        description: 'Optional commit or ref to build instead of the release tag'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      release_tag:
+        description: 'Release tag to publish, for example v3.0.1'
+        required: true
+        type: string
+      source_ref:
+        description: 'Commit or ref containing the validated source to build'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -23,11 +37,12 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ inputs.release_tag || github.ref_name }}
+      SOURCE_REF: ${{ inputs.source_ref || inputs.release_tag || github.ref }}
     steps:
       - name: Checkout release source
         uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ inputs.source_ref || inputs.release_tag || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
