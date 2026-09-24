@@ -982,6 +982,8 @@ export interface AddOpenAIResponsesAccountRequest {
   codex_passthrough_mode?: CodexPassthroughMode
   proxy_url: string
   custom_headers?: Record<string, string> | null
+  sub2_upstream_rate_probe_enabled?: boolean
+  sub2_upstream_rate_probe_interval_minutes?: number
 }
 
 export interface UpdateOpenAIResponsesAccountRequest {
@@ -995,6 +997,8 @@ export interface UpdateOpenAIResponsesAccountRequest {
   codex_passthrough_mode?: CodexPassthroughMode
   proxy_url: string
   custom_headers?: Record<string, string> | null
+  sub2_upstream_rate_probe_enabled?: boolean
+  sub2_upstream_rate_probe_interval_minutes?: number
 }
 
 export interface FetchOpenAIResponsesModelsRequest {
@@ -3511,6 +3515,10 @@ export interface UsageLog {
   image_cache_read_cost?: number
   image_input_price_per_mtoken?: number
   cached_image_input_price_per_mtoken?: number
+  model_input_price_per_mtoken?: number
+  model_output_price_per_mtoken?: number
+  model_cache_read_price_per_mtoken?: number
+  applied_billing_multiplier?: number
   cache_write_5m_tokens: number
   cache_write_1h_tokens: number
   service_tier: string
@@ -3531,6 +3539,10 @@ export interface UsageLog {
   created_at: ISODateString
   account_billed: number
   user_billed: number
+  upstream_cost?: number
+  upstream_rate_multiplier?: number
+  upstream_cost_available?: boolean
+  upstream_cost_provider?: string
   input_cost: number
   output_cost: number
   cache_read_cost: number
@@ -3957,6 +3969,10 @@ export interface PublicAPIKeyUsageLog {
   output_cost: number
   cache_read_cost: number
   total_cost: number
+  model_input_price_per_mtoken?: number
+  model_output_price_per_mtoken?: number
+  model_cache_read_price_per_mtoken?: number
+  applied_billing_multiplier?: number
   input_price_per_mtoken: number
   output_price_per_mtoken: number
   cache_read_price_per_mtoken: number
