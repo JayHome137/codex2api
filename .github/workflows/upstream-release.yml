@@ -1,0 +1,100 @@
+name: Publish Upstream Release
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+      - Security Scan
+    types:
+      - completed
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: upstream-release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_REPOSITORY: james-6-23/codex2api
+  UPSTREAM_SYNC_WORKFLOW: .github/workflows/upstream-sync.yml
+
+jobs:
+  promote-validated-main:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout validated main commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Verify checks and promote the upstream tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          upstream_tag=$(sed -n 's/^  UPSTREAM_TAG:[[:space:]]*//p' "$UPSTREAM_SYNC_WORKFLOW" | head -n 1)
+          if [[ ! "$upstream_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid upstream tag in $UPSTREAM_SYNC_WORKFLOW: $upstream_tag" >&2
+            exit 1
+          fi
+
+          echo "source_sha=$SOURCE_SHA"
+          echo "upstream_tag=$upstream_tag"
+
+          # Both push checks must be successful for this exact main commit.
+          runs_json=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SOURCE_SHA}&event=push&per_page=100")
+          ci_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "CI" and .head_branch == "main") | .conclusion] | last // ""' <<< "$runs_json")
+          security_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "Security Scan" and .head_branch == "main") | .conclusion] | last // ""' <<< "$runs_json")
+          echo "ci_conclusion=$ci_conclusion"
+          echo "security_conclusion=$security_conclusion"
+          if [[ "$ci_conclusion" != "success" || "$security_conclusion" != "success" ]]; then
+            echo "The matching CI and Security Scan runs are not both successful yet; no release will be promoted."
+            exit 0
+          fi
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch --no-tags upstream \
+            "refs/tags/${upstream_tag}:refs/tags/upstream-${upstream_tag}"
+          upstream_sha=$(git rev-parse "refs/tags/upstream-${upstream_tag}^{commit}")
+          if ! git merge-base --is-ancestor "$upstream_sha" "$SOURCE_SHA"; then
+            echo "Validated main does not contain ${upstream_tag} (${upstream_sha}); no release will be promoted."
+            exit 0
+          fi
+
+          existing_tag_sha=$(git ls-remote origin "refs/tags/${upstream_tag}^{}" | awk 'NR == 1 { print $1 }')
+          if [[ -z "$existing_tag_sha" ]]; then
+            existing_tag_sha=$(git ls-remote origin "refs/tags/${upstream_tag}" | awk 'NR == 1 { print $1 }')
+          fi
+          if [[ -n "$existing_tag_sha" ]]; then
+            if [[ "$existing_tag_sha" != "$SOURCE_SHA" ]]; then
+              echo "Remote tag ${upstream_tag} already points to ${existing_tag_sha}, not ${SOURCE_SHA}." >&2
+              exit 1
+            fi
+            echo "Remote tag ${upstream_tag} already points to this validated commit; nothing to promote."
+            exit 0
+          fi
+
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${upstream_tag}" >/dev/null 2>&1; then
+            echo "Release ${upstream_tag} already exists; nothing to promote."
+            exit 0
+          fi
+
+          git tag -a "$upstream_tag" "$SOURCE_SHA" \
+            -m "Release ${upstream_tag} with upstream ${upstream_tag} and fork billing support"
+          git push origin "$upstream_tag"
+          {
+            echo "### Release promotion"
+            echo
+            echo "Promoted validated main commit `${SOURCE_SHA}` to tag `${upstream_tag}`."
+            echo "The tag push now starts the release asset build."
+          } >> "$GITHUB_STEP_SUMMARY"
