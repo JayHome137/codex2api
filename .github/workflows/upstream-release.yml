@@ -71,32 +71,40 @@ jobs:
             exit 0
           fi
 
-          existing_tag_sha=$(git ls-remote origin "refs/tags/${upstream_tag}^{}" | awk 'NR == 1 { print $1 }')
-          if [[ -z "$existing_tag_sha" ]]; then
-            existing_tag_sha=$(git ls-remote origin "refs/tags/${upstream_tag}" | awk 'NR == 1 { print $1 }')
-          fi
-          if [[ -n "$existing_tag_sha" ]]; then
-            if [[ "$existing_tag_sha" != "$SOURCE_SHA" ]]; then
-              echo "Remote tag ${upstream_tag} already points to ${existing_tag_sha}, not ${SOURCE_SHA}." >&2
-              exit 1
-            fi
-            echo "Remote tag ${upstream_tag} already points to this validated commit; nothing to promote."
-            exit 0
-          fi
-
           if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${upstream_tag}" >/dev/null 2>&1; then
             echo "Release ${upstream_tag} already exists; nothing to promote."
             exit 0
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$upstream_tag" "$SOURCE_SHA" \
-            -m "Release ${upstream_tag} with upstream ${upstream_tag} and fork billing support"
-          git push origin "$upstream_tag"
+          existing_tag_sha=$(git ls-remote origin "refs/tags/${upstream_tag}^{}" | awk 'NR == 1 { print $1 }')
+          if [[ -z "$existing_tag_sha" ]]; then
+            existing_tag_sha=$(git ls-remote origin "refs/tags/${upstream_tag}" | awk 'NR == 1 { print $1 }')
+          fi
+          if [[ -n "$existing_tag_sha" && "$existing_tag_sha" != "$SOURCE_SHA" ]]; then
+            if ! git merge-base --is-ancestor "$existing_tag_sha" "$SOURCE_SHA"; then
+              echo "Remote tag ${upstream_tag} already points to unrelated commit ${existing_tag_sha}, not ${SOURCE_SHA}." >&2
+              exit 1
+            fi
+            echo "Remote tag ${upstream_tag} points to an earlier validated ancestor ${existing_tag_sha}."
+          fi
+
+          if [[ -z "$existing_tag_sha" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$upstream_tag" "$SOURCE_SHA" \
+              -m "Release ${upstream_tag} with upstream ${upstream_tag} and fork billing support"
+            git push origin "$upstream_tag"
+          else
+            echo "Remote tag ${upstream_tag} already points to this validated commit."
+          fi
+
+          gh workflow run release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$SOURCE_SHA" \
+            -f "release_tag=${upstream_tag}"
           {
             echo "### Release promotion"
             echo
-            echo "Promoted validated main commit `${SOURCE_SHA}` to tag `${upstream_tag}`."
-            echo "The tag push now starts the release asset build."
+            echo "Validated main commit `${SOURCE_SHA}` is being published as `${upstream_tag}`."
+            echo "The release asset workflow was dispatched explicitly after the tag check."
           } >> "$GITHUB_STEP_SUMMARY"
