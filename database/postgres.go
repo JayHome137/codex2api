@@ -251,8 +251,8 @@ const (
 	maxUsageLogFlushIntervalSeconds     = 300
 
 	postgresMaxBindParams       = 65535
-	usageLogInsertColumnCount   = 69
-	maxUsageLogInsertRowsPerSQL = 900 // 69 cols * 900 = 62100 < 65535 PG bind limit
+	usageLogInsertColumnCount   = 73
+	maxUsageLogInsertRowsPerSQL = 897 // 73 cols * 897 = 65481 < 65535 PG bind limit
 
 	// usageLogBufferHardLimit 内存缓冲的硬上限。PG 长时间不可用时（维护、主从切换、
 	// 磁盘写满）失败批次会一直被放回缓冲区，没有上限的话内存一路涨到 OOM——那会把
@@ -362,6 +362,10 @@ type usageLogEntry struct {
 	ImageSize              string
 	AccountBilled          float64
 	UserBilled             float64
+	UpstreamCost           float64
+	UpstreamRateMultiplier float64
+	UpstreamCostAvailable  bool
+	UpstreamCostProvider   string
 	IsRetryAttempt         bool
 	AttemptIndex           int
 	UpstreamErrorKind      string
@@ -1269,6 +1273,10 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS image_size VARCHAR(32) DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS account_billed DOUBLE PRECISION DEFAULT 0;
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS user_billed DOUBLE PRECISION DEFAULT 0;
+	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS upstream_cost DOUBLE PRECISION DEFAULT 0;
+	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS upstream_rate_multiplier DOUBLE PRECISION DEFAULT 0;
+	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS upstream_cost_available BOOLEAN DEFAULT FALSE;
+	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS upstream_cost_provider VARCHAR(64) DEFAULT '';
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS is_retry_attempt BOOLEAN DEFAULT FALSE;
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS attempt_index INT DEFAULT 0;
 	ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS upstream_error_kind VARCHAR(64) DEFAULT '';
@@ -4253,6 +4261,10 @@ type UsageLog struct {
 	CreatedAt              time.Time `json:"created_at"`
 	AccountBilled          float64   `json:"account_billed"`
 	UserBilled             float64   `json:"user_billed"`
+	UpstreamCost           float64   `json:"upstream_cost"`
+	UpstreamRateMultiplier float64   `json:"upstream_rate_multiplier"`
+	UpstreamCostAvailable  bool      `json:"upstream_cost_available"`
+	UpstreamCostProvider   string    `json:"upstream_cost_provider,omitempty"`
 	ImageInputCost         float64   `json:"image_input_cost"`
 	ImageCacheReadCost     float64   `json:"image_cache_read_cost"`
 	ImageInputPrice        float64   `json:"image_input_price_per_mtoken"`
@@ -4276,6 +4288,10 @@ type UsageLog struct {
 	UpstreamErrorKind      string    `json:"upstream_error_kind"`
 	ErrorMessage           string    `json:"error_message"`
 	PromptPolicyIncidentID string    `json:"prompt_policy_incident_id,omitempty"`
+	ModelInputPrice          float64   `json:"model_input_price_per_mtoken"`
+	ModelOutputPrice         float64   `json:"model_output_price_per_mtoken"`
+	ModelCacheReadPrice      float64   `json:"model_cache_read_price_per_mtoken"`
+	AppliedBillingMultiplier float64   `json:"applied_billing_multiplier"`
 }
 
 // usage_logs 中受 varchar 长度约束的列宽。这些字段大多直接来自下游请求体或上游响应
@@ -4422,6 +4438,10 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 		ImageSize:              clampUsageLogText(log.ImageSize, usageLogImageSizeMaxLen),
 		AccountBilled:          accountBilled,
 		UserBilled:             userBilled,
+		UpstreamCost:           log.UpstreamCost,
+		UpstreamRateMultiplier: log.UpstreamRateMultiplier,
+		UpstreamCostAvailable:  log.UpstreamCostAvailable,
+		UpstreamCostProvider:   clampUsageLogText(log.UpstreamCostProvider, usageLogShortTextMaxLen),
 		UserBilling:            log.UserBillingDetails(),
 		IsRetryAttempt:         log.IsRetryAttempt,
 		AttemptIndex:           log.AttemptIndex,
@@ -4514,6 +4534,12 @@ type UsageLogInput struct {
 	UpstreamErrorKind      string
 	ErrorMessage           string
 	PromptPolicyIncidentID string
+	// UpstreamCost is independent from account_billed/user_billed and is only
+	// populated when a Sub2API-style multiplier probe succeeded.
+	UpstreamCost           float64
+	UpstreamRateMultiplier float64
+	UpstreamCostAvailable  bool
+	UpstreamCostProvider   string
 }
 
 func (l *UsageLog) populateBillingBreakdown() {
@@ -4528,6 +4554,9 @@ func (l *UsageLog) populateBillingBreakdown() {
 	breakdown := UsageLogCostBreakdown(&UsageLogInput{Model: billingModel, BillingServiceTier: billingServiceTier, InputTokens: l.InputTokens, OutputTokens: l.OutputTokens, CachedTokens: l.CachedTokens, CacheWrite5mTokens: l.CacheWrite5mTokens, CacheWrite1hTokens: l.CacheWrite1hTokens, ImageInputTokens: l.ImageInputTokens, ImageOutputTokens: l.ImageOutputTokens, CachedImageInputTokens: l.CachedImageInputTokens})
 	l.ImageInputCost, l.ImageCacheReadCost = breakdown.ImageInputCost, breakdown.ImageCacheReadCost
 	l.ImageInputPrice, l.CachedImageInputPrice = breakdown.ImageInputPricePerMToken, breakdown.CacheReadImagePricePerMToken
+	l.ModelInputPrice = breakdown.InputPricePerMToken
+	l.ModelOutputPrice = breakdown.OutputPricePerMToken
+	l.ModelCacheReadPrice = breakdown.CacheReadPricePerMToken
 	l.InputCost = breakdown.InputCost
 	l.OutputCost = breakdown.OutputCost
 	l.CacheReadCost = breakdown.CacheReadCost
@@ -4551,6 +4580,9 @@ func (l *UsageLog) populateBillingBreakdown() {
 	displayTotal := l.UserBilled
 	if displayTotal <= 0 {
 		displayTotal = l.AccountBilled
+	}
+	if displayTotal > 0 && breakdown.TotalCost > 0 {
+		l.AppliedBillingMultiplier = displayTotal / breakdown.TotalCost
 	}
 	if displayTotal > 0 && breakdown.TotalCost > 0 && displayTotal != breakdown.TotalCost {
 		scale := displayTotal / breakdown.TotalCost
@@ -4826,10 +4858,10 @@ func (db *DB) insertSQLiteUsageLogBatch(ctx context.Context, batch []usageLogEnt
 			`INSERT INTO usage_logs (account_id, credential_generation, channel, client_ip, endpoint, model, effective_model, upstream_response_model, upstream_model_mismatch, prompt_tokens, completion_tokens, total_tokens, status_code, duration_ms,
 				  input_tokens, output_tokens, reasoning_tokens, first_token_ms, ws_acquire_ms, reasoning_effort, inbound_endpoint, upstream_endpoint, stream, compact, has_compaction_history, ultra, cached_tokens, image_input_tokens, image_output_tokens, cached_image_input_tokens, cache_write_5m_tokens, cache_write_1h_tokens, service_tier,
 				  requested_service_tier, actual_service_tier, billing_service_tier,
-				  api_key_id, api_key_name, api_key_masked, image_count, image_width, image_height, image_bytes, image_format, image_size, account_billed, user_billed,
+			  api_key_id, api_key_name, api_key_masked, image_count, image_width, image_height, image_bytes, image_format, image_size, account_billed, user_billed, upstream_cost, upstream_rate_multiplier, upstream_cost_available, upstream_cost_provider,
 				  is_retry_attempt, attempt_index, upstream_error_kind, error_message, via_websocket,
 				  client_user_agent, upstream_user_agent, user_agent_overridden, turn_state_overridden, turn_state_rewrite_note, internal_reason, parent_request_id, prompt_policy_incident_id, request_id, upstream_request_id, upstream_proxy_id, upstream_proxy_name, injected_turn_state, upstream_turn_state, user_billing_mode, image_unit_price, billed_image_count)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69)`)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73)`)
 		if err != nil {
 			return fmt.Errorf("准备语句: %w", err)
 		}
@@ -4839,7 +4871,7 @@ func (db *DB) insertSQLiteUsageLogBatch(ctx context.Context, batch []usageLogEnt
 			if _, err := stmt.ExecContext(ctx, e.AccountID, e.CredentialGeneration, e.Channel, e.ClientIP, e.Endpoint, e.Model, e.EffectiveModel, nullableUpstreamResponseModel(e.UpstreamResponseModel), nullableUpstreamModelMismatch(e.UpstreamModelMismatch), e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.StatusCode, e.DurationMs,
 				e.InputTokens, e.OutputTokens, e.ReasoningTokens, e.FirstTokenMs, e.WsAcquireMs, e.ReasoningEffort, e.InboundEndpoint, e.UpstreamEndpoint, e.Stream, e.Compact, e.HasCompactionHistory, e.Ultra, e.CachedTokens, e.ImageInputTokens, e.ImageOutputTokens, e.CachedImageInputTokens, e.CacheWrite5mTokens, e.CacheWrite1hTokens, e.ServiceTier,
 				e.RequestedServiceTier, e.ActualServiceTier, e.BillingServiceTier,
-				e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled,
+				e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled, e.UpstreamCost, e.UpstreamRateMultiplier, e.UpstreamCostAvailable, e.UpstreamCostProvider,
 				e.IsRetryAttempt, e.AttemptIndex, e.UpstreamErrorKind, e.ErrorMessage, e.ViaWebsocket,
 				e.ClientUserAgent, e.UpstreamUserAgent, e.UserAgentOverridden, e.TurnStateOverridden, e.TurnStateRewriteNote, e.InternalReason, e.ParentRequestID, nullablePromptPolicyIncidentID(e.PromptPolicyIncidentID), e.RequestID, e.UpstreamRequestID, e.UpstreamProxyID, e.UpstreamProxyName, e.InjectedTurnState, e.UpstreamTurnState, e.UserBillingMode, e.ImageUnitPrice, e.BilledImageCount); err != nil {
 				return fmt.Errorf("执行插入: %w", err)
@@ -4929,7 +4961,7 @@ func (db *DB) batchInsertLogsChunk(ctx context.Context, execer sqlExecer, batch 
 		valueArgs = append(valueArgs, e.AccountID, e.CredentialGeneration, e.Channel, e.ClientIP, e.Endpoint, e.Model, e.EffectiveModel, nullableUpstreamResponseModel(e.UpstreamResponseModel), nullableUpstreamModelMismatch(e.UpstreamModelMismatch), e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.StatusCode, e.DurationMs,
 			e.InputTokens, e.OutputTokens, e.ReasoningTokens, e.FirstTokenMs, e.WsAcquireMs, e.ReasoningEffort, e.InboundEndpoint, e.UpstreamEndpoint, e.Stream, e.Compact, e.HasCompactionHistory, e.Ultra, e.CachedTokens, e.ImageInputTokens, e.ImageOutputTokens, e.CachedImageInputTokens, e.CacheWrite5mTokens, e.CacheWrite1hTokens, e.ServiceTier,
 			e.RequestedServiceTier, e.ActualServiceTier, e.BillingServiceTier,
-			e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled,
+			e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled, e.UpstreamCost, e.UpstreamRateMultiplier, e.UpstreamCostAvailable, e.UpstreamCostProvider,
 			e.IsRetryAttempt, e.AttemptIndex, e.UpstreamErrorKind, e.ErrorMessage, e.ViaWebsocket,
 			e.ClientUserAgent, e.UpstreamUserAgent, e.UserAgentOverridden, e.TurnStateOverridden, e.TurnStateRewriteNote, e.InternalReason, e.ParentRequestID, nullablePromptPolicyIncidentID(e.PromptPolicyIncidentID), e.RequestID, e.UpstreamRequestID, e.UpstreamProxyID, e.UpstreamProxyName, e.InjectedTurnState, e.UpstreamTurnState, e.UserBillingMode, e.ImageUnitPrice, e.BilledImageCount)
 		argIdx += usageLogInsertColumnCount
@@ -4938,7 +4970,7 @@ func (db *DB) batchInsertLogsChunk(ctx context.Context, execer sqlExecer, batch 
 	query := fmt.Sprintf(`INSERT INTO usage_logs (account_id, credential_generation, channel, client_ip, endpoint, model, effective_model, upstream_response_model, upstream_model_mismatch, prompt_tokens, completion_tokens, total_tokens, status_code, duration_ms,
 		input_tokens, output_tokens, reasoning_tokens, first_token_ms, ws_acquire_ms, reasoning_effort, inbound_endpoint, upstream_endpoint, stream, compact, has_compaction_history, ultra, cached_tokens, image_input_tokens, image_output_tokens, cached_image_input_tokens, cache_write_5m_tokens, cache_write_1h_tokens, service_tier,
 		requested_service_tier, actual_service_tier, billing_service_tier,
-		api_key_id, api_key_name, api_key_masked, image_count, image_width, image_height, image_bytes, image_format, image_size, account_billed, user_billed,
+		api_key_id, api_key_name, api_key_masked, image_count, image_width, image_height, image_bytes, image_format, image_size, account_billed, user_billed, upstream_cost, upstream_rate_multiplier, upstream_cost_available, upstream_cost_provider,
 		is_retry_attempt, attempt_index, upstream_error_kind, error_message, via_websocket,
 		client_user_agent, upstream_user_agent, user_agent_overridden, turn_state_overridden, turn_state_rewrite_note, internal_reason, parent_request_id, prompt_policy_incident_id, request_id, upstream_request_id, upstream_proxy_id, upstream_proxy_name, injected_turn_state, upstream_turn_state, user_billing_mode, image_unit_price, billed_image_count)
 		VALUES %s`, strings.Join(valueStrings, ","))

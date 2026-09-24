@@ -1171,6 +1171,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.PATCH("/accounts/:id/models", h.UpdateAccountModels)
 	api.POST("/accounts/:id/models/sync-upstream", h.SyncAccountUpstreamModels)
 	api.POST("/accounts/:id/models/probe", h.ProbeAccountModels)
+	api.POST("/accounts/:id/sub2api/upstream-rate/probe", h.ProbeSub2APIUpstreamRate)
 	api.POST("/accounts/:id/turn-state/refresh", h.RefreshCodexTurnStateTemplates)
 	api.GET("/codex-turn-state/renewals", h.ListCodexTurnStateHistory)
 	api.PATCH("/accounts/:id/scheduler", h.UpdateAccountScheduler)
@@ -1694,6 +1695,12 @@ type accountResponse struct {
 	ClaudeVersionPolicyOverride   string                      `json:"claude_version_policy_override,omitempty"`
 	ClaudeClientVersionOverride   string                      `json:"claude_client_version_override,omitempty"`
 	Timezone                      string                      `json:"timezone,omitempty"`
+	Sub2UpstreamRateProbeEnabled         bool                        `json:"sub2_upstream_rate_probe_enabled,omitempty"`
+	Sub2UpstreamRateProbeIntervalMinutes int64                       `json:"sub2_upstream_rate_probe_interval_minutes,omitempty"`
+	Sub2UpstreamAccount                  bool                        `json:"sub2_upstream_account,omitempty"`
+	Sub2UpstreamRateMultiplier           float64                     `json:"sub2_upstream_rate_multiplier,omitempty"`
+	Sub2UpstreamRateProbeAt              string                      `json:"sub2_upstream_rate_probe_at,omitempty"`
+	Sub2UpstreamRateProbeError           string                      `json:"sub2_upstream_rate_probe_error,omitempty"`
 	CodexTurnStateProxyURL        string                      `json:"codex_turn_state_proxy_url,omitempty"`
 	CodexTurnStateDisabled        bool                        `json:"codex_turn_state_disabled"`
 	CodexTurnState                string                      `json:"codex_turn_state,omitempty"`
@@ -2157,6 +2164,8 @@ type updateAccountSchedulerReq struct {
 	ClaudeVersionPolicy     json.RawMessage `json:"claude_version_policy"`
 	ClaudeClientVersion     json.RawMessage `json:"claude_client_version"`
 	Timezone                json.RawMessage `json:"timezone"`
+	Sub2UpstreamRateProbeEnabled         json.RawMessage `json:"sub2_upstream_rate_probe_enabled"`
+	Sub2UpstreamRateProbeIntervalMinutes json.RawMessage `json:"sub2_upstream_rate_probe_interval_minutes"`
 	CodexTurnStateProxyURL  json.RawMessage `json:"codex_turn_state_proxy_url"`
 	CodexTurnStateDisabled  json.RawMessage `json:"codex_turn_state_disabled"`
 	CodexTurnState          json.RawMessage `json:"codex_turn_state"`
@@ -2185,6 +2194,8 @@ type accountSchedulerUpdate struct {
 	ClaudeVersionPolicy     database.OptionalString
 	ClaudeClientVersion     database.OptionalString
 	Timezone                database.OptionalString
+	Sub2UpstreamRateProbeEnabled         database.OptionalBool
+	Sub2UpstreamRateProbeIntervalMinutes database.OptionalNullInt64
 	CodexTurnStateProxyURL  database.OptionalString
 	CodexTurnStateDisabled  database.OptionalBool
 	CodexTurnState          database.OptionalString
@@ -2295,6 +2306,17 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
+	sub2ProbeEnabled, err := parseOptionalBoolField(req.Sub2UpstreamRateProbeEnabled, "sub2_upstream_rate_probe_enabled")
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	sub2ProbeInterval, err := parseOptionalIntegerField(req.Sub2UpstreamRateProbeIntervalMinutes, "sub2_upstream_rate_probe_interval_minutes", 5, 30)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
+	if sub2ProbeInterval.Set && !map[int64]bool{5: true, 10: true, 20: true, 30: true}[sub2ProbeInterval.Value.Int64] {
+		return accountSchedulerUpdate{}, errors.New("sub2_upstream_rate_probe_interval_minutes must be 5, 10, 20, or 30")
+	}
 	codexTurnStateProxyURL, err := parseOptionalStringField(req.CodexTurnStateProxyURL, "codex_turn_state_proxy_url", func(value string) error {
 		if value == "" {
 			return nil
@@ -2351,6 +2373,12 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	}
 	if timezoneField.Set {
 		credentialUpdates[auth.AccountTimezoneCredentialKey] = strings.TrimSpace(timezoneField.Value)
+	}
+	if sub2ProbeEnabled.Set {
+		credentialUpdates["sub2_upstream_rate_probe_enabled"] = sub2ProbeEnabled.Value
+	}
+	if sub2ProbeInterval.Set {
+		credentialUpdates["sub2_upstream_rate_probe_interval_minutes"] = sub2ProbeInterval.Value.Int64
 	}
 	if codexTurnStateProxyURL.Set {
 		credentialUpdates[auth.CodexTurnStateProxyURLCredentialKey] = codexTurnStateProxyURL.Value
@@ -2430,6 +2458,8 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		ClaudeVersionPolicy:     claudeVersionPolicy,
 		ClaudeClientVersion:     claudeClientVersion,
 		Timezone:                timezoneField,
+		Sub2UpstreamRateProbeEnabled:         sub2ProbeEnabled,
+		Sub2UpstreamRateProbeIntervalMinutes: sub2ProbeInterval,
 		CodexTurnStateProxyURL:  codexTurnStateProxyURL,
 		CodexTurnStateDisabled:  codexTurnStateDisabled,
 		CodexTurnState:          codexTurnStateField,
@@ -2532,7 +2562,9 @@ func (u accountSchedulerUpdate) hasChanges() bool {
 		u.ClaudeClientPlatform.Set ||
 		u.ClaudeVersionPolicy.Set ||
 		u.ClaudeClientVersion.Set ||
-		u.Timezone.Set
+		u.Timezone.Set ||
+		u.Sub2UpstreamRateProbeEnabled.Set ||
+		u.Sub2UpstreamRateProbeIntervalMinutes.Set
 }
 
 func optionalBoolFromPtr(value *bool) database.OptionalBool {
@@ -4216,6 +4248,8 @@ type addOpenAIResponsesAccountReq struct {
 	CodexPassthroughMode    *string           `json:"codex_passthrough_mode"`
 	ProxyURL                string            `json:"proxy_url"`
 	CustomHeaders           map[string]string `json:"custom_headers"`
+	Sub2UpstreamRateProbeEnabled         bool  `json:"sub2_upstream_rate_probe_enabled"`
+	Sub2UpstreamRateProbeIntervalMinutes int64 `json:"sub2_upstream_rate_probe_interval_minutes"`
 }
 
 type fetchOpenAIResponsesModelsReq struct {
@@ -4329,6 +4363,11 @@ func (h *Handler) AddOpenAIResponsesAccount(c *gin.Context) {
 		"codex_passthrough_mode":                 codexPassthroughMode,
 		"plan_type":                              "api",
 		"email":                                  baseURL,
+		"sub2_upstream_rate_probe_enabled":       req.Sub2UpstreamRateProbeEnabled,
+		"sub2_upstream_rate_probe_interval_minutes": req.Sub2UpstreamRateProbeIntervalMinutes,
+	}
+	if req.Sub2UpstreamRateProbeIntervalMinutes == 0 {
+		credentials["sub2_upstream_rate_probe_interval_minutes"] = int64(5)
 	}
 	if len(customHeaders) > 0 {
 		credentials["custom_headers"] = cloneCustomHeaders(customHeaders)
@@ -4540,6 +4579,11 @@ func (h *Handler) UpdateOpenAIResponsesAccount(c *gin.Context) {
 		"plan_type":                              "api",
 		"email":                                  baseURL,
 		"custom_headers":                         cloneCustomHeaders(customHeaders),
+		"sub2_upstream_rate_probe_enabled":       req.Sub2UpstreamRateProbeEnabled,
+		"sub2_upstream_rate_probe_interval_minutes": req.Sub2UpstreamRateProbeIntervalMinutes,
+	}
+	if req.Sub2UpstreamRateProbeIntervalMinutes == 0 {
+		credentials["sub2_upstream_rate_probe_interval_minutes"] = int64(5)
 	}
 	if req.APIKey != "" {
 		credentials["api_key"] = req.APIKey

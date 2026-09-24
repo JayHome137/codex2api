@@ -884,6 +884,8 @@ export const api = {
     request<import('./types').SubscriptionRefreshResponse>(`/accounts/${id}/subscription/refresh`, { method: 'POST', timeoutMs: 30_000 }),
   updateAccountScheduler: (id: number, data: UpdateAccountSchedulerRequest) =>
     request<MessageResponse>(`/accounts/${id}/scheduler`, { method: 'PATCH', body: JSON.stringify(data) }),
+  probeSub2UpstreamRate: (id: number) =>
+    request<{ enabled: boolean; available: boolean; multiplier?: number; probed_at?: string; error?: string }>(`/accounts/${id}/sub2api/upstream-rate/probe`, { method: 'POST' }),
   // 设置 OAuth 账号的支持模型白名单;空数组表示清空(该账号可调度所有模型)。返回归一化后的白名单。
   updateAccountModels: (id: number, models: string[]) =>
     request<{ models: string[] }>(`/accounts/${id}/models`, { method: 'PATCH', body: JSON.stringify({ models }) }),

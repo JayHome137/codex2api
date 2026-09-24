@@ -347,7 +347,11 @@ func UsageLogBilledCost(log *UsageLogInput) float64 {
 	if log.billingSnapshot != nil {
 		return log.billingSnapshot.accountCost
 	}
-	return UsageLogCostBreakdown(log).TotalCost
+	cost := UsageLogCostBreakdown(log).TotalCost
+	if log.UpstreamRateMultiplier > 0 {
+		cost *= log.UpstreamRateMultiplier
+	}
+	return cost
 }
 
 func CalculateCostBreakdown(inputTokens, outputTokens, cachedTokens int, model string, serviceTier string) CostBreakdown {

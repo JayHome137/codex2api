@@ -249,6 +249,55 @@ func TestGPT6AstraPricing(t *testing.T) {
 	}
 }
 
+func TestGPT6SolAndLunaUseIndependentPricing(t *testing.T) {
+	for _, tc := range []struct {
+		model                       string
+		inputPrice, cachePrice, out float64
+	}{
+		{"gpt-6-sol", 2, .2, 10},
+		{"gpt-6-luna", .1, .01, .5},
+	} {
+		pricing := GetModelPricing(tc.model)
+		assertFloatEqual(t, pricing.InputPricePerMToken, tc.inputPrice)
+		assertFloatEqual(t, pricing.CacheReadPricePerMToken, tc.cachePrice)
+		assertFloatEqual(t, pricing.OutputPricePerMToken, tc.out)
+	}
+
+	if got := CanonicalBillingModelKey("gpt-6-sol-high"); got != "gpt-6-sol" {
+		t.Fatalf("CanonicalBillingModelKey(gpt-6-sol-high) = %q, want gpt-6-sol", got)
+	}
+
+	// Screenshot usage: 28,028 uncached + 5,249 cached input tokens, 177 output.
+	log := &UsageLogInput{
+		EffectiveModel:         "gpt-6-sol",
+		InputTokens:            33_277,
+		CachedTokens:           5_249,
+		OutputTokens:           177,
+		UpstreamRateMultiplier: .07,
+	}
+	assertFloatEqual(t, UsageLogBilledCost(log), .004121306)
+}
+
+func TestUsageLogBillingBreakdownKeepsModelPriceSeparateFromStoredCharge(t *testing.T) {
+	log := &UsageLog{
+		EffectiveModel:         "gpt-6-sol",
+		InputTokens:            33_277,
+		CachedTokens:           5_249,
+		OutputTokens:           177,
+		UserBilled:             .02060653,
+		UpstreamRateMultiplier: .07,
+	}
+
+	log.populateBillingBreakdown()
+
+	assertFloatEqual(t, log.ModelInputPrice, 10)
+	assertFloatEqual(t, log.ModelOutputPrice, 50)
+	assertFloatEqual(t, log.ModelCacheReadPrice, 1)
+	assertFloatEqual(t, log.AppliedBillingMultiplier, .07)
+	assertFloatEqual(t, log.InputPrice, .7)
+	assertFloatEqual(t, log.TotalCost, .02060653)
+}
+
 func TestSparkPricingUsesGpt51CodexFallback(t *testing.T) {
 	spark := GetModelPricing("gpt-5.3-codex-spark-high")
 

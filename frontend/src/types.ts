@@ -335,6 +335,12 @@ export interface AccountRow {
   claude_usage_windows_probed?: boolean
   timezone?: string
   custom_headers?: Record<string, string> | null
+  sub2_upstream_rate_probe_enabled?: boolean
+  sub2_upstream_rate_probe_interval_minutes?: number
+  sub2_upstream_account?: boolean
+  sub2_upstream_rate_multiplier?: number
+  sub2_upstream_rate_probe_at?: string
+  sub2_upstream_rate_probe_error?: string
   codex_turn_state_status?: CodexTurnStateStatus
   codex_turn_state_proxy_url?: string
   codex_turn_state_disabled?: boolean
@@ -1488,6 +1494,8 @@ export interface UpdateAccountSchedulerRequest {
   claude_version_policy?: 'passthrough' | 'fixed' | 'minimum' | null
   claude_client_version?: string | null
   timezone?: string | null
+  sub2_upstream_rate_probe_enabled?: boolean
+  sub2_upstream_rate_probe_interval_minutes?: number
   codex_turn_state_proxy_url?: string | null
   codex_turn_state_disabled?: boolean | null
   codex_turn_state?: string | null

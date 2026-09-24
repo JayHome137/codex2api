@@ -58,6 +58,30 @@ func TestImageUserBillingPolicyAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestUpstreamRateMultiplierAppliesToTokenAndAccountBilling(t *testing.T) {
+	input := &UsageLogInput{Model: "gpt-5.6-sol", InputTokens: 1_000, OutputTokens: 1_000, UpstreamRateMultiplier: 1.5}
+	if got := UsageLogBilledCost(input); !approxEqual(got, .0525) {
+		t.Fatalf("account cost = %v, want .0525", got)
+	}
+	if got := UsageLogUserBilledCost(input); !approxEqual(got, .0525) {
+		t.Fatalf("token user cost = %v, want .0525", got)
+	}
+}
+
+func TestUpstreamRateMultiplierDoesNotChangePerImageUserBilling(t *testing.T) {
+	previous := currentModelPricingOverrides()
+	t.Cleanup(func() { SetModelPricingOverrides(previous) })
+	SetModelPricingOverrides(map[string]ModelPricingOverride{"gpt-image-2.5-flare": {UserBillingMode: UserBillingModePerImage, ImageUnitPrice: .05}})
+	input := &UsageLogInput{Model: "gpt-image-2.5-flare", StatusCode: 200, ImageCount: 2, InputTokens: 1000, OutputTokens: 100, UpstreamRateMultiplier: 2}
+	snapshot := SnapshotUsageLogBilling(input)
+	if got := UsageLogBilledCost(snapshot); !approxEqual(got, .016) {
+		t.Fatalf("account cost = %v, want .016", got)
+	}
+	if got := UsageLogUserBilledCost(snapshot); got != .1 {
+		t.Fatalf("per-image user cost = %v, want .1", got)
+	}
+}
+
 func TestValidateImageUserBilling(t *testing.T) {
 	for _, tc := range []struct {
 		model, mode string

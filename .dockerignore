@@ -5,6 +5,7 @@
 # Frontend build artifacts & deps (rebuilt in Docker)
 frontend/node_modules/
 frontend/dist/
+logs/
 
 # IDE
 .vscode/

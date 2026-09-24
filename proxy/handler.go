@@ -66,6 +66,7 @@ type Handler struct {
 	apiKeyGateMu    sync.Mutex
 	promptRiskMu    sync.Mutex
 	apiKeyGate      *apiKeyConcurrencyLimiter
+	sub2RateFlight  singleflight.Group
 	scopeUsageMu    sync.Mutex
 	scopeUsage      *apiKeyScopeUsageTracker
 	scopeDeltaInit  sync.Once
@@ -1441,6 +1442,7 @@ func (h *Handler) logUsage(input *database.UsageLogInput) {
 	// failure and transport-retry paths cannot accidentally omit it. A retry
 	// that switches accounts naturally resolves the replacement account here.
 	// Non-Grok and unresolved accounts deliberately remain legacy/unscoped (0).
+	h.populateSub2UpstreamCost(input)
 	input = database.SnapshotUsageLogBilling(input)
 	h.populateUsageCredentialGeneration(input)
 	// scope 维度预算（issue #439）在日志落库前先吃到这笔消耗，抵掉窗口聚合缓存的滞后。
@@ -1528,6 +1530,7 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	populateCompactUsageMetaFromRequest(c, input)
 	populateUltraUsageMetaFromRequest(c, input)
 	markCyberPolicyUsageKind(input)
+	h.populateSub2UpstreamCost(input)
 	input = database.SnapshotUsageLogBilling(input)
 	if deferImageUsage(c, h, input) {
 		return

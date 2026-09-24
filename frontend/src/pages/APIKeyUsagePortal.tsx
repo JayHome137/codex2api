@@ -1125,6 +1125,8 @@ function RecentLogsTable({
 function LogCostCell({ log }: { log: PublicAPIKeyUsageLog }) {
   const { t } = useTranslation()
   if (log.user_billing_mode === 'per_image') return <ImageBillingCost count={log.billed_image_count} unitPrice={log.image_unit_price} userBilled={log.user_billed} />
+  const appliedBillingMultiplier = log.applied_billing_multiplier ?? 0
+  const originalCost = appliedBillingMultiplier > 0 ? log.total_cost / appliedBillingMultiplier : log.total_cost
   const hasCostContext = log.status_code < 400 && (
     log.user_billed > 0 || log.total_cost > 0 || log.input_tokens > 0 || log.output_tokens > 0 || log.cached_tokens > 0
   )
@@ -1147,12 +1149,16 @@ function LogCostCell({ log }: { log: PublicAPIKeyUsageLog }) {
           <div className="mb-1 text-xs font-semibold text-slate-300">{t('usage.costDetails')}</div>
           {log.input_cost > 0 ? <LogCostRow label={t('usage.inputCost')} value={formatUSD(log.input_cost)} /> : null}
           {log.output_cost > 0 ? <LogCostRow label={t('usage.outputCost')} value={formatUSD(log.output_cost)} /> : null}
+          {log.input_tokens > 0 && (log.model_input_price_per_mtoken ?? 0) > 0 ? <LogCostRow label={t('usage.inputUnitPrice')} value={formatTokenPricePerMillion(log.model_input_price_per_mtoken)} valueClassName="text-sky-300" /> : null}
+          {log.output_tokens > 0 && (log.model_output_price_per_mtoken ?? 0) > 0 ? <LogCostRow label={t('usage.outputUnitPrice')} value={formatTokenPricePerMillion(log.model_output_price_per_mtoken)} valueClassName="text-violet-300" /> : null}
           {log.cached_tokens > 0 ? <LogCostRow label={t('usage.cacheReadCost')} value={formatUSD(log.cache_read_cost)} /> : null}
-          {log.input_tokens > 0 ? <LogCostRow label={t('usage.inputUnitPrice')} value={formatTokenPricePerMillion(log.input_price_per_mtoken)} valueClassName="text-sky-300" /> : null}
-          {log.output_tokens > 0 ? <LogCostRow label={t('usage.outputUnitPrice')} value={formatTokenPricePerMillion(log.output_price_per_mtoken)} valueClassName="text-violet-300" /> : null}
-          {log.cached_tokens > 0 && log.cache_read_price_per_mtoken > 0 ? <LogCostRow label={t('usage.cacheReadUnitPrice')} value={formatTokenPricePerMillion(log.cache_read_price_per_mtoken)} valueClassName="text-cyan-300" /> : null}
-          <div className="my-1 h-px bg-slate-800" />
-          <LogCostRow label={t('usage.tableCost')} value={formatUSD(log.user_billed)} valueClassName="text-emerald-300" />
+          {log.cached_tokens > 0 && (log.model_cache_read_price_per_mtoken ?? 0) > 0 ? <LogCostRow label={t('usage.cacheReadUnitPrice')} value={formatTokenPricePerMillion(log.model_cache_read_price_per_mtoken)} valueClassName="text-cyan-300" /> : null}
+          <div className="border-t border-slate-800 pt-2">
+            <LogCostRow label={t('usage.billingTier')} value={log.service_tier || '-'} valueClassName="text-slate-200" />
+            {appliedBillingMultiplier > 0 ? <LogCostRow label={t('usage.billingMultiplier')} value={`×${appliedBillingMultiplier.toFixed(4)}`} valueClassName="text-emerald-300" /> : null}
+            {originalCost > 0 ? <LogCostRow label={t('usage.originalCost')} value={formatUSD(originalCost)} valueClassName="text-slate-200" /> : null}
+            <LogCostRow label={t('usage.userBilled')} value={formatUSD(log.user_billed)} valueClassName="text-emerald-300" />
+          </div>
         </div>
       </TooltipContent>
     </Tooltip>

@@ -31,6 +31,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
   Sheet,
@@ -93,6 +94,8 @@ export default function AccountQuickConfigSheet({
   const [retryNonce, setRetryNonce] = useState(0);
   const [form, setForm] = useState<QuickConfigFormState | null>(null);
   const [syncedId, setSyncedId] = useState<number | null>(null);
+  const [probingRate, setProbingRate] = useState(false);
+  const [rateProbeMessage, setRateProbeMessage] = useState("");
 
   const accountId = account?.id ?? null;
   if (accountId !== syncedId) {
@@ -193,6 +196,9 @@ export default function AccountQuickConfigSheet({
   const fingerprintMode = form?.fingerprintMode ?? "off";
   const scoreMode = form?.scoreMode ?? "default";
   const concurrencyMode = form?.concurrencyMode ?? "default";
+  // Any Responses/API account may point at a billing-aware relay; let the
+  // operator opt in instead of guessing from import provenance or base URL.
+  const isSub2Upstream = Boolean(account.openai_responses_api || account.sub2_upstream_account);
 
   return (
     <Sheet open={show} onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -398,6 +404,47 @@ export default function AccountQuickConfigSheet({
               />
             </div>
           </div>
+
+          {isSub2Upstream && (
+            <div className="rounded-xl border border-border/70 bg-card p-4 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-bold text-foreground">自动探查上游倍率</div>
+                  <div className="text-[11px] text-muted-foreground">按所选间隔随请求探查；未成功探查时按官方价格计费。</div>
+                </div>
+                <Switch
+                  checked={form?.sub2UpstreamRateProbeEnabled ?? false}
+                  onCheckedChange={(checked) => patchForm({ sub2UpstreamRateProbeEnabled: checked })}
+                />
+              </div>
+              {form?.sub2UpstreamRateProbeEnabled && (
+                <div className="flex items-center justify-between gap-3 border-t border-border/40 pt-2">
+                  <span className="text-[11px] text-muted-foreground">自动探查间隔</span>
+                  <Select
+                    value={String(form.sub2UpstreamRateProbeIntervalMinutes)}
+                    onValueChange={(value) => patchForm({ sub2UpstreamRateProbeIntervalMinutes: Number(value) })}
+                    options={[5, 10, 20, 30].map((minutes) => ({ value: String(minutes), label: `每 ${minutes} 分钟` }))}
+                    aria-label="自动探查间隔"
+                    compact
+                  />
+                </div>
+              )}
+              <div className="flex items-center justify-between gap-2 border-t border-border/40 pt-2 text-[11px] text-muted-foreground">
+                <span>{rateProbeMessage || (account.sub2_upstream_rate_multiplier ? `当前倍率 ×${account.sub2_upstream_rate_multiplier.toFixed(4)}` : "尚未探查")}</span>
+                <Button type="button" size="sm" variant="outline" disabled={probingRate} onClick={async () => {
+                  setProbingRate(true);
+                  try {
+                    const result = await api.probeSub2UpstreamRate(account.id);
+                    setRateProbeMessage(result.available ? `探查成功：×${Number(result.multiplier || 0).toFixed(4)}` : (result.error || "探查失败"));
+                  } catch (error) {
+                    setRateProbeMessage(`探查失败：${getErrorMessage(error)}`);
+                  } finally {
+                    setProbingRate(false);
+                  }
+                }}>{probingRate ? "探查中" : "立即探查"}</Button>
+              </div>
+            </div>
+          )}
 
           <div className="rounded-xl border border-border/70 bg-card p-4 shadow-2xs space-y-3.5">
             <div className="flex items-center gap-2 border-b border-border/50 pb-2.5">

@@ -11,6 +11,22 @@ import (
 	"github.com/codex2api/internal/openaiidentity"
 )
 
+func credentialFloat(value string) float64 {
+	n, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+func isExternalResponsesUpstream(baseURL string) bool {
+	n := strings.ToLower(strings.TrimSpace(baseURL))
+	if n == "" {
+		return false
+	}
+	return !strings.Contains(n, "api.openai.com") && !strings.Contains(n, "chatgpt.com")
+}
+
 func antigravityPersistedStatus(row *database.AccountRow) (string, string) {
 	if row == nil {
 		return "error", "账号不存在"
@@ -264,32 +280,43 @@ func (h *Handler) buildAccountResponse(
 		ClaudeVersionPolicyOverride:  claudeVersionPolicyOverride,
 		ClaudeClientVersionOverride:  claudeClientVersionOverride,
 		Timezone:                     accountTimezone,
-		CodexTurnStateProxyURL:       strings.TrimSpace(row.GetCredential(auth.CodexTurnStateProxyURLCredentialKey)),
-		CodexTurnStateDisabled:       row.GetCredentialBool(auth.CodexTurnStateDisabledCredentialKey),
-		CodexTurnState:               strings.TrimSpace(row.GetCredential(auth.CodexTurnStateCredentialKey)),
-		CodexTurnStateModels:         auth.NormalizeCodexTurnStateModels(row.GetCredential(auth.CodexTurnStateModelsCredentialKey)),
-		CodexTurnStateSetAt:          strings.TrimSpace(row.GetCredential(auth.CodexTurnStateSetAtCredentialKey)),
-		CustomHeaders:                customHeaders,
-		UpstreamRequestIDHeader:      row.GetCredential(auth.UpstreamRequestIDHeaderCredentialKey),
-		ProxyURL:                     row.ProxyURL,
-		Enabled:                      row.Enabled,
-		Locked:                       row.Locked,
-		AllowedAPIKeyIDs:             allowedAPIKeyIDs,
-		Tags:                         append([]string(nil), row.Tags...),
-		Note:                         row.Note,
-		ScoreBiasOverride:            nullableInt64Pointer(row.ScoreBiasOverride),
-		ScoreBiasEffective:           effectiveScoreBias(planType, row.ScoreBiasOverride),
-		BaseConcurrencyOverride:      nullableInt64Pointer(row.BaseConcurrencyOverride),
-		BaseConcurrencyEffective:     effectiveBaseConcurrency(row.BaseConcurrencyOverride, int64(h.store.GetMaxConcurrency())),
-		CreatedAt:                    row.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:                    row.UpdatedAt.Format(time.RFC3339),
-		CodexUsageUpdatedAt:          row.GetCredential("codex_usage_updated_at"),
-		Codex5HUsageUpdatedAt:        row.GetCredential("codex_5h_usage_updated_at"),
-		ClaudeUsageProbeAt:           row.GetCredential(auth.ClaudeUsageProbeAtCredentialKey),
-		ClaudeUsageProbeError:        row.GetCredential(auth.ClaudeUsageProbeErrorCredentialKey),
-		ClaudeUsageWindows:           parseClaudeUsageWindows(row.GetCredential(auth.ClaudeUsageWindowsCredentialKey)),
-		UsageLimitOverride:           ignoreUsageLimitStatusOverride,
-		UsageLimitEffective:          ignoreUsageLimitStatusEffective,
+		Sub2UpstreamRateProbeEnabled: row.GetCredentialBool("sub2_upstream_rate_probe_enabled"),
+		Sub2UpstreamRateProbeIntervalMinutes: func() int64 {
+			if minutes, ok := row.GetCredentialInt64("sub2_upstream_rate_probe_interval_minutes"); ok && (minutes == 5 || minutes == 10 || minutes == 20 || minutes == 30) {
+				return minutes
+			}
+			return 5
+		}(),
+		Sub2UpstreamAccount:        row.GetCredentialBool("sub2_upstream_account") || (isOpenAIResponsesAccount && isExternalResponsesUpstream(baseURL)),
+		Sub2UpstreamRateMultiplier: credentialFloat(row.GetCredential("sub2_upstream_rate_multiplier")),
+		Sub2UpstreamRateProbeAt:    strings.TrimSpace(row.GetCredential("sub2_upstream_rate_probe_at")),
+		Sub2UpstreamRateProbeError: strings.TrimSpace(row.GetCredential("sub2_upstream_rate_probe_error")),
+		CodexTurnStateProxyURL:     strings.TrimSpace(row.GetCredential(auth.CodexTurnStateProxyURLCredentialKey)),
+		CodexTurnStateDisabled:     row.GetCredentialBool(auth.CodexTurnStateDisabledCredentialKey),
+		CodexTurnState:             strings.TrimSpace(row.GetCredential(auth.CodexTurnStateCredentialKey)),
+		CodexTurnStateModels:       auth.NormalizeCodexTurnStateModels(row.GetCredential(auth.CodexTurnStateModelsCredentialKey)),
+		CodexTurnStateSetAt:        strings.TrimSpace(row.GetCredential(auth.CodexTurnStateSetAtCredentialKey)),
+		CustomHeaders:              customHeaders,
+		UpstreamRequestIDHeader:    row.GetCredential(auth.UpstreamRequestIDHeaderCredentialKey),
+		ProxyURL:                   row.ProxyURL,
+		Enabled:                    row.Enabled,
+		Locked:                     row.Locked,
+		AllowedAPIKeyIDs:           allowedAPIKeyIDs,
+		Tags:                       append([]string(nil), row.Tags...),
+		Note:                       row.Note,
+		ScoreBiasOverride:          nullableInt64Pointer(row.ScoreBiasOverride),
+		ScoreBiasEffective:         effectiveScoreBias(planType, row.ScoreBiasOverride),
+		BaseConcurrencyOverride:    nullableInt64Pointer(row.BaseConcurrencyOverride),
+		BaseConcurrencyEffective:   effectiveBaseConcurrency(row.BaseConcurrencyOverride, int64(h.store.GetMaxConcurrency())),
+		CreatedAt:                  row.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:                  row.UpdatedAt.Format(time.RFC3339),
+		CodexUsageUpdatedAt:        row.GetCredential("codex_usage_updated_at"),
+		Codex5HUsageUpdatedAt:      row.GetCredential("codex_5h_usage_updated_at"),
+		ClaudeUsageProbeAt:         row.GetCredential(auth.ClaudeUsageProbeAtCredentialKey),
+		ClaudeUsageProbeError:      row.GetCredential(auth.ClaudeUsageProbeErrorCredentialKey),
+		ClaudeUsageWindows:         parseClaudeUsageWindows(row.GetCredential(auth.ClaudeUsageWindowsCredentialKey)),
+		UsageLimitOverride:         ignoreUsageLimitStatusOverride,
+		UsageLimitEffective:        ignoreUsageLimitStatusEffective,
 	}
 	// 凭据里只要存在 usage 窗口键(哪怕是空数组)就代表 OAuth usage 采样跑过。
 	resp.ClaudeUsageWindowsProbed = strings.TrimSpace(row.GetCredential(auth.ClaudeUsageWindowsCredentialKey)) != ""

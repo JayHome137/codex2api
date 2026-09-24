@@ -27,6 +27,13 @@ export interface QuickConfigAccountSource {
   custom_headers?: Record<string, string> | null;
   tags?: string[] | null;
   group_ids?: number[] | null;
+  openai_responses_api?: boolean;
+  sub2_upstream_rate_probe_enabled?: boolean;
+  sub2_upstream_rate_probe_interval_minutes?: number;
+  sub2_upstream_account?: boolean;
+  sub2_upstream_rate_multiplier?: number;
+  sub2_upstream_rate_probe_at?: string;
+  sub2_upstream_rate_probe_error?: string;
 }
 
 export interface QuickConfigFormState {
@@ -43,6 +50,8 @@ export interface QuickConfigFormState {
   customHeadersText: string;
   tags: string[];
   groupIds: number[];
+  sub2UpstreamRateProbeEnabled: boolean;
+  sub2UpstreamRateProbeIntervalMinutes: number;
 }
 
 export function accountHasQuickConfigDetails(
@@ -126,6 +135,8 @@ export function formStateFromAccount(
     customHeadersText: formatCustomHeadersText(account.custom_headers),
     tags: account.tags ?? [],
     groupIds: account.group_ids ?? [],
+    sub2UpstreamRateProbeEnabled: account.sub2_upstream_rate_probe_enabled ?? false,
+    sub2UpstreamRateProbeIntervalMinutes: account.sub2_upstream_rate_probe_interval_minutes ?? 5,
   };
 }
 
@@ -205,6 +216,8 @@ export function buildQuickConfigSavePayload(
       codex_fingerprint_mode: form.fingerprintMode,
       tags: form.tags,
       group_ids: form.groupIds,
+      sub2_upstream_rate_probe_enabled: form.sub2UpstreamRateProbeEnabled,
+      sub2_upstream_rate_probe_interval_minutes: form.sub2UpstreamRateProbeIntervalMinutes,
     },
   };
 }

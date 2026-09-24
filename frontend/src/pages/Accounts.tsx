@@ -1,4 +1,4 @@
-import type { ChangeEvent, DragEvent, ReactNode } from "react";
+import type { ChangeEvent, DragEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { memo, useCallback, useEffect, useRef, useState, useMemo } from "react";
 import "./accounts-cards.css";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -1940,6 +1940,8 @@ export default function Accounts() {
       codex_client_metadata_mode: "auto",
       codex_passthrough_mode: "off",
       proxy_url: "",
+      sub2_upstream_rate_probe_enabled: false,
+      sub2_upstream_rate_probe_interval_minutes: 5,
     });
   const [openAIModelDraft, setOpenAIModelDraft] = useState("");
   const [editOpenAIModelDraft, setEditOpenAIModelDraft] = useState("");
@@ -2039,6 +2041,8 @@ export default function Accounts() {
       codex_client_metadata_mode: "auto",
       codex_passthrough_mode: "off",
       proxy_url: "",
+      sub2_upstream_rate_probe_enabled: false,
+      sub2_upstream_rate_probe_interval_minutes: 5,
     });
   const [openAIModelMappingText, setOpenAIModelMappingText] = useState("");
   const [openAIModelMappingMode, setOpenAIModelMappingMode] =
@@ -3713,6 +3717,8 @@ export default function Accounts() {
         codex_client_metadata_mode: "auto",
         codex_passthrough_mode: "off",
         proxy_url: "",
+        sub2_upstream_rate_probe_enabled: false,
+        sub2_upstream_rate_probe_interval_minutes: 5,
       });
       setOpenAIModelDraft("");
       setOpenAIModelMappingText("");
@@ -3790,7 +3796,22 @@ export default function Accounts() {
         custom_headers: parsedCustomHeaders.value,
       });
       invalidateAPIAccountBalance(editingAccount.id);
-      showToast(t("accounts.openaiAccountSaveSuccess"));
+      let rateProbeNotice = "";
+      if (
+        editOpenAIForm.sub2_upstream_rate_probe_enabled &&
+        (!editingAccount.sub2_upstream_rate_probe_enabled ||
+          !editingAccount.sub2_upstream_rate_multiplier)
+      ) {
+        try {
+          const probe = await api.probeSub2UpstreamRate(editingAccount.id);
+          rateProbeNotice = probe.available
+            ? ` 上游倍率 ×${Number(probe.multiplier || 0).toFixed(4)}`
+            : ` 倍率探查失败：${probe.error || "上游未返回有效倍率"}`;
+        } catch (probeError) {
+          rateProbeNotice = ` 倍率探查失败：${getErrorMessage(probeError)}`;
+        }
+      }
+      showToast(`${t("accounts.openaiAccountSaveSuccess")}${rateProbeNotice}`);
       await reload();
       closeSchedulerEditor(true);
     } catch (error) {
@@ -5659,6 +5680,10 @@ export default function Accounts() {
       codex_passthrough_mode:
         account.codex_passthrough_mode ?? "off",
       proxy_url: account.proxy_url ?? "",
+      sub2_upstream_rate_probe_enabled:
+        account.sub2_upstream_rate_probe_enabled ?? false,
+      sub2_upstream_rate_probe_interval_minutes:
+        account.sub2_upstream_rate_probe_interval_minutes ?? 5,
     });
     setEditOpenAIModelDraft("");
     setEditOpenAIModelMappingText(account.model_mapping ?? "");
@@ -5718,6 +5743,8 @@ export default function Accounts() {
       codex_client_metadata_mode: "auto",
       codex_passthrough_mode: "off",
       proxy_url: "",
+      sub2_upstream_rate_probe_enabled: false,
+      sub2_upstream_rate_probe_interval_minutes: 5,
     });
     setEditOpenAIModelDraft("");
     setEditOpenAIModelMappingText("");
@@ -7700,6 +7727,7 @@ export default function Accounts() {
                 api_key: "",
                 models: [],
                 proxy_url: "",
+                sub2_upstream_rate_probe_enabled: false,
               });
               setOpenAIModelDraft("");
               setOpenAIModelMappingText("");
@@ -8113,6 +8141,45 @@ export default function Accounts() {
                   <p className="mt-1.5 text-xs text-muted-foreground">
                     {t("accounts.apiBalanceQueryUrlHint")}
                   </p>
+                </div>
+                <div className="rounded-xl border border-border/70 bg-card p-4 shadow-2xs">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-1">
+                      <div className="font-semibold text-foreground text-sm">
+                        自动探查上游倍率
+                      </div>
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        请求流量按所选间隔探查；有成功倍率时按官方价格乘倍率计费，尚无成功倍率时按官方价格。
+                      </p>
+                    </div>
+                    <Switch
+                      checked={openAIForm.sub2_upstream_rate_probe_enabled ?? false}
+                      onCheckedChange={(checked) =>
+                        setOpenAIForm((form) => ({
+                          ...form,
+                          sub2_upstream_rate_probe_enabled: checked,
+                        }))
+                      }
+                      aria-label="自动探查上游倍率"
+                    />
+                  </div>
+                  {openAIForm.sub2_upstream_rate_probe_enabled && (
+                    <div className="mt-3 flex items-center justify-between gap-4 border-t border-border/60 pt-3">
+                      <label className="text-sm text-muted-foreground">自动探查间隔</label>
+                      <Select
+                        value={String(openAIForm.sub2_upstream_rate_probe_interval_minutes ?? 5)}
+                        onValueChange={(value) =>
+                          setOpenAIForm((form) => ({
+                            ...form,
+                            sub2_upstream_rate_probe_interval_minutes: Number(value),
+                          }))
+                        }
+                        options={[5, 10, 20, 30].map((minutes) => ({ value: String(minutes), label: `每 ${minutes} 分钟` }))}
+                        aria-label="自动探查间隔"
+                        compact
+                      />
+                    </div>
+                  )}
                 </div>
                 <div>
                   <label className="block mb-2 text-sm font-semibold text-muted-foreground">
@@ -9275,6 +9342,45 @@ export default function Accounts() {
                         <p className="mt-1.5 text-xs text-muted-foreground">
                           {t("accounts.apiBalanceQueryUrlHint")}
                         </p>
+                      </div>
+                      <div className="rounded-xl border border-border/70 bg-card p-4 shadow-2xs">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="space-y-1">
+                            <div className="font-semibold text-foreground text-sm">
+                              自动探查上游倍率
+                            </div>
+                            <p className="text-xs text-muted-foreground leading-relaxed">
+                              请求流量按所选间隔探查；有成功倍率时按官方价格乘倍率计费，尚无成功倍率时按官方价格。
+                            </p>
+                          </div>
+                          <Switch
+                            checked={editOpenAIForm.sub2_upstream_rate_probe_enabled ?? false}
+                            onCheckedChange={(checked) =>
+                              setEditOpenAIForm((form) => ({
+                                ...form,
+                                sub2_upstream_rate_probe_enabled: checked,
+                              }))
+                            }
+                            aria-label="自动探查上游倍率"
+                          />
+                        </div>
+                        {editOpenAIForm.sub2_upstream_rate_probe_enabled && (
+                          <div className="mt-3 flex items-center justify-between gap-4 border-t border-border/60 pt-3">
+                            <label className="text-sm text-muted-foreground">自动探查间隔</label>
+                            <Select
+                              value={String(editOpenAIForm.sub2_upstream_rate_probe_interval_minutes ?? 5)}
+                              onValueChange={(value) =>
+                                setEditOpenAIForm((form) => ({
+                                  ...form,
+                                  sub2_upstream_rate_probe_interval_minutes: Number(value),
+                                }))
+                              }
+                              options={[5, 10, 20, 30].map((minutes) => ({ value: String(minutes), label: `每 ${minutes} 分钟` }))}
+                              aria-label="自动探查间隔"
+                              compact
+                            />
+                          </div>
+                        )}
                       </div>
                       <div>
                         <label className="block mb-2 text-xs font-semibold text-muted-foreground">
@@ -14274,6 +14380,16 @@ function UsageWindowStat({
   );
 }
 
+function UpstreamRateStatus({ account }: { account: AccountRow }) {
+  if (!account.sub2_upstream_account) return null;
+  const multiplier = account.sub2_upstream_rate_multiplier;
+  return (
+    <div className="mt-1 text-[11px] font-medium text-amber-600 dark:text-amber-300">
+      上游倍率：{typeof multiplier === "number" && multiplier > 0 ? `×${multiplier.toFixed(4)}` : "未探查"}
+    </div>
+  );
+}
+
 // 今日统计列:网关侧口径,服务器时区当天 0 点起(参考 sub2api 的今日统计列)。
 // page-stats 对本页每个账号必回该字段,零值是真实的"今天没跑";
 // 字段缺失说明 stats 还没到(加载中/失败),显示占位而不是 0。
@@ -14535,6 +14651,7 @@ function UsageCell({
           ) : (
             <UsageWindowStat label={longWindowLabel} detail={account.usage_7d_detail} />
           )}
+          <UpstreamRateStatus account={account} />
         </div>
         {refreshButton}
       </div>
@@ -14560,6 +14677,7 @@ function UsageCell({
               apiAccount={account.openai_responses_api}
             />
           )}
+          <UpstreamRateStatus account={account} />
         </div>
         {refreshButton}
       </div>
@@ -14584,6 +14702,7 @@ function UsageCell({
               apiAccount={account.openai_responses_api}
             />
           )}
+          <UpstreamRateStatus account={account} />
         </div>
         {refreshButton}
       </div>
@@ -14697,6 +14816,49 @@ function APIAccountBalanceBadge({ accountId }: { accountId: number }) {
   );
 }
 
+function UpstreamRateBadge({ account }: { account: AccountRow }) {
+  const [multiplier, setMultiplier] = useState(account.sub2_upstream_rate_multiplier);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setMultiplier(account.sub2_upstream_rate_multiplier);
+  }, [account.sub2_upstream_rate_multiplier]);
+
+  const probe = async (event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (loading) return;
+    setLoading(true);
+    setError("");
+    try {
+      const result = await api.probeSub2UpstreamRate(account.id);
+      if (result.available && typeof result.multiplier === "number" && result.multiplier > 0) {
+        setMultiplier(result.multiplier);
+      } else {
+        setError(result.error || "上游未返回有效倍率");
+      }
+    } catch (cause) {
+      setError(getErrorMessage(cause));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const hasMultiplier = typeof multiplier === "number" && multiplier > 0;
+  return (
+    <button
+      type="button"
+      onClick={probe}
+      disabled={loading}
+      className="inline-flex items-center gap-1 whitespace-nowrap rounded-md bg-amber-500/10 px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-amber-700 ring-1 ring-inset ring-amber-500/20 transition-colors hover:bg-amber-500/20 disabled:cursor-wait dark:text-amber-300"
+      title={error || (hasMultiplier ? "点击重新探查上游倍率" : "点击探查上游倍率")}
+    >
+      {loading && <Loader2 className="size-3 shrink-0 animate-spin" aria-hidden />}
+      上游倍率：{hasMultiplier ? `×${multiplier.toFixed(4)}` : error ? "探查失败" : "未探查"}
+    </button>
+  );
+}
+
 // 成本列并排两套账,颜色区分口径:
 // 上行(石板色)是网关自己的日志算出来的,只含经由本网关转发的请求;
 // 下行(琥珀色)是 OpenAI 官方结算数,还包含用户直接用官方客户端的消耗。
@@ -14758,6 +14920,9 @@ function BilledCell({
   return (
     <div className="account-billed-cell flex flex-col items-start gap-1">
       {showAPIBalance && <APIAccountBalanceBadge accountId={account.id} />}
+      {account.sub2_upstream_account && (
+        <UpstreamRateBadge account={account} />
+      )}
       {(visibleH5 !== null || d7 !== null) && (
         <span
           className="account-billed-gateway inline-flex items-center gap-1 whitespace-nowrap rounded-md bg-slate-500/10 px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-slate-700 ring-1 ring-inset ring-slate-500/20 dark:text-slate-300"

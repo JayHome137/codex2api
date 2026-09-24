@@ -427,11 +427,10 @@ function UsageCostCell({ log }: { log: UsageLog }) {
   const userBilled = safeNumber(log.user_billed)
   const totalCost = safeNumber(log.total_cost)
   const displayCost = userBilled > 0 ? userBilled : accountBilled
+  const appliedBillingMultiplier = safeNumber(log.applied_billing_multiplier)
+  const billedCost = displayCost > 0 ? displayCost : totalCost
+  const originalCost = appliedBillingMultiplier > 0 ? billedCost / appliedBillingMultiplier : totalCost
   const longContextThreshold = safeNumber(log.long_context_threshold)
-  const requestedTier = log.requested_service_tier || ''
-  // legacy 行（三字段拆分前）只有 service_tier 可用；新行 actual 为空表示上游未回传，
-  // 不能回退到偏好请求意图的 legacy 列冒充“上游回传 Tier”。
-  const actualTier = log.actual_service_tier || (requestedTier ? '' : log.service_tier || '')
   const billingTier = log.billing_service_tier || log.service_tier || ''
   const hasCostContext = log.status_code < 400 && (
     accountBilled > 0 ||
@@ -462,9 +461,16 @@ function UsageCostCell({ log }: { log: UsageLog }) {
       <TooltipContent side="right" sideOffset={8} className="w-96 max-w-none whitespace-nowrap rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-xs text-slate-50 shadow-xl">
         <div className="space-y-1.5">
           <div className="mb-1 text-xs font-semibold text-slate-300">{t('usage.costDetails')}</div>
-          {log.input_cost > 0 && (
-            <CostTooltipRow label={t('usage.inputCost')} value={formatUSD(log.input_cost)} />
-          )}
+          {log.input_cost > 0 && <CostTooltipRow label={t('usage.inputCost')} value={formatUSD(log.input_cost)} />}
+          {log.output_cost > 0 && <CostTooltipRow label={t('usage.outputCost')} value={formatUSD(log.output_cost)} />}
+          {log.input_tokens > 0 && safeNumber(log.model_input_price_per_mtoken) > 0 && <CostTooltipRow label={t('usage.inputUnitPrice')} value={formatTokenPricePerMillion(log.model_input_price_per_mtoken)} valueClassName="text-sky-300" />}
+          {log.output_tokens > 0 && safeNumber(log.model_output_price_per_mtoken) > 0 && <CostTooltipRow label={t('usage.outputUnitPrice')} value={formatTokenPricePerMillion(log.model_output_price_per_mtoken)} valueClassName="text-violet-300" />}
+          {log.cached_tokens > 0 && <CostTooltipRow label={t('usage.cacheReadCost')} value={formatUSD(log.cache_read_cost)} />}
+          {log.cached_tokens > 0 && safeNumber(log.model_cache_read_price_per_mtoken) > 0 && <CostTooltipRow label={t('usage.cacheReadUnitPrice')} value={formatTokenPricePerMillion(log.model_cache_read_price_per_mtoken)} valueClassName="text-cyan-300" />}
+          {(log.cache_write_5m_tokens ?? 0) > 0 && <CostTooltipRow label={t('usage.cacheWrite5mCost')} value={formatUSD(log.cache_write_5m_cost)} />}
+          {(log.cache_write_1h_tokens ?? 0) > 0 && <CostTooltipRow label={t('usage.cacheWrite1hCost')} value={formatUSD(log.cache_write_1h_cost)} />}
+          {(log.cache_write_5m_tokens ?? 0) > 0 && log.cache_write_5m_price_per_mtoken > 0 && <CostTooltipRow label={t('usage.cacheWrite5mUnitPrice')} value={formatTokenPricePerMillion(log.cache_write_5m_price_per_mtoken)} valueClassName="text-amber-300" />}
+          {(log.cache_write_1h_tokens ?? 0) > 0 && log.cache_write_1h_price_per_mtoken > 0 && <CostTooltipRow label={t('usage.cacheWrite1hUnitPrice')} value={formatTokenPricePerMillion(log.cache_write_1h_price_per_mtoken)} valueClassName="text-amber-300" />}
           {(log.image_input_tokens ?? 0) > 0 && (
             <CostTooltipRow label={t('usage.imageInputTokens')} value={formatTokens(log.image_input_tokens ?? 0, true)} />
           )}
@@ -480,48 +486,12 @@ function UsageCostCell({ log }: { log: UsageLog }) {
           {(log.image_cache_read_cost ?? 0) > 0 && (
             <CostTooltipRow label={t('usage.imageCacheReadCost')} value={formatUSD(log.image_cache_read_cost ?? 0)} />
           )}
-          {log.output_cost > 0 && (
-            <CostTooltipRow label={t('usage.outputCost')} value={formatUSD(log.output_cost)} />
-          )}
-          {log.cached_tokens > 0 && (
-            <CostTooltipRow label={t('usage.cacheReadCost')} value={formatUSD(log.cache_read_cost)} />
-          )}
-          {(log.cache_write_5m_tokens ?? 0) > 0 && (
-            <CostTooltipRow label={t('usage.cacheWrite5mCost')} value={formatUSD(log.cache_write_5m_cost)} />
-          )}
-          {(log.cache_write_1h_tokens ?? 0) > 0 && (
-            <CostTooltipRow label={t('usage.cacheWrite1hCost')} value={formatUSD(log.cache_write_1h_cost)} />
-          )}
-          {log.input_tokens > 0 && (
-            <CostTooltipRow label={t('usage.inputUnitPrice')} value={formatTokenPricePerMillion(log.input_price_per_mtoken)} valueClassName="text-sky-300" />
-          )}
-          {log.output_tokens > 0 && (
-            <CostTooltipRow label={t('usage.outputUnitPrice')} value={formatTokenPricePerMillion(log.output_price_per_mtoken)} valueClassName="text-violet-300" />
-          )}
-          {log.cached_tokens > 0 && log.cache_read_price_per_mtoken > 0 && (
-            <CostTooltipRow label={t('usage.cacheReadUnitPrice')} value={formatTokenPricePerMillion(log.cache_read_price_per_mtoken)} valueClassName="text-cyan-300" />
-          )}
-          {(log.cache_write_5m_tokens ?? 0) > 0 && (log.cache_write_5m_price_per_mtoken ?? 0) > 0 && (
-            <CostTooltipRow label={t('usage.cacheWrite5mUnitPrice')} value={formatTokenPricePerMillion(log.cache_write_5m_price_per_mtoken)} valueClassName="text-amber-300" />
-          )}
-          {(log.cache_write_1h_tokens ?? 0) > 0 && (log.cache_write_1h_price_per_mtoken ?? 0) > 0 && (
-            <CostTooltipRow label={t('usage.cacheWrite1hUnitPrice')} value={formatTokenPricePerMillion(log.cache_write_1h_price_per_mtoken)} valueClassName="text-amber-300" />
-          )}
-          {requestedTier && (
-            <CostTooltipRow label={t('usage.requestedTier')} value={formatServiceTierLabel(t, requestedTier)} valueClassName="text-slate-200" />
-          )}
-          {actualTier && (
-            <CostTooltipRow
-              label={t('usage.actualTier')}
-              value={formatServiceTierLabel(t, actualTier)}
-              valueClassName={isFastTier(actualTier) ? 'text-amber-300' : 'text-slate-200'}
-            />
-          )}
-          <CostTooltipRow
-            label={t('usage.billingTier')}
-            value={formatServiceTierLabel(t, billingTier)}
-            valueClassName={isFastTier(billingTier) ? 'text-amber-300' : 'text-slate-200'}
-          />
+          <div className="border-t border-slate-800 pt-2">
+            <CostTooltipRow label={t('usage.billingTier')} value={formatServiceTierLabel(t, billingTier)} valueClassName={isFastTier(billingTier) ? 'text-amber-300' : 'text-slate-200'} />
+            {appliedBillingMultiplier > 0 && <CostTooltipRow label={t('usage.billingMultiplier')} value={`×${appliedBillingMultiplier.toFixed(4)}`} valueClassName="text-emerald-300" />}
+            {originalCost > 0 && <CostTooltipRow label={t('usage.originalCost')} value={formatUSD(originalCost)} valueClassName="text-slate-200" />}
+            {billedCost > 0 && <CostTooltipRow label={t('usage.userBilled')} value={formatUSD(billedCost)} valueClassName="text-emerald-300" />}
+          </div>
           {log.long_context && longContextThreshold > 0 && (
             <CostTooltipRow
               label={t('usage.billingContext')}
