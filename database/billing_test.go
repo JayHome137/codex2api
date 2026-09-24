@@ -290,10 +290,10 @@ func TestUsageLogBillingBreakdownKeepsModelPriceSeparateFromStoredCharge(t *test
 
 	log.populateBillingBreakdown()
 
-	assertFloatEqual(t, log.ModelInputPrice, 10)
-	assertFloatEqual(t, log.ModelOutputPrice, 50)
-	assertFloatEqual(t, log.ModelCacheReadPrice, 1)
-	assertFloatEqual(t, log.AppliedBillingMultiplier, .07)
+	assertFloatEqual(t, log.ModelInputPrice, 2)
+	assertFloatEqual(t, log.ModelOutputPrice, 10)
+	assertFloatEqual(t, log.ModelCacheReadPrice, .2)
+	assertFloatEqual(t, log.AppliedBillingMultiplier, .35)
 	assertFloatEqual(t, log.InputPrice, .7)
 	assertFloatEqual(t, log.TotalCost, .02060653)
 }

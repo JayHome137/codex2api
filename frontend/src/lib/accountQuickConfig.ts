@@ -74,6 +74,7 @@ export function normalizeCodexFingerprintMode(
 ): CodexFingerprintMode {
   if (
     value === "off" ||
+    value === "single_machine_multi_window" ||
     value === "device" ||
     value === "session" ||
     value === "full"
