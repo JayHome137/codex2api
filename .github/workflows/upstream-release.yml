@@ -89,6 +89,8 @@ jobs:
             exit 0
           fi
 
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$upstream_tag" "$SOURCE_SHA" \
             -m "Release ${upstream_tag} with upstream ${upstream_tag} and fork billing support"
           git push origin "$upstream_tag"
