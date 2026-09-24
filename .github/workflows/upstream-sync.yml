@@ -121,12 +121,3 @@ jobs:
             echo
             echo "The PR page shows merge conflicts separately from CI checks."
           } >> "$GITHUB_STEP_SUMMARY"
-
-          jq -n \
-            --arg ref "$SYNC_BRANCH" \
-            --arg sha "$upstream_sha" \
-            --arg pr_url "$pr_url" \
-            '{event_type:"upstream-sync",client_payload:{ref:$ref,sha:$sha,pr_url:$pr_url}}' \
-            | gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" --input -
-
-          echo "ci_dispatch=sent"

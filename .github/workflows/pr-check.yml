@@ -14,13 +14,8 @@ on:
       - 'docs/**'
       - 'README.md'
       - 'CHANGELOG.md'
-  repository_dispatch:
-    types:
-      - upstream-sync
-
 permissions:
   contents: read
-  statuses: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -33,8 +28,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.sha || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -75,8 +68,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.sha || github.ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -98,8 +89,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.sha || github.ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -129,8 +118,6 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.sha || github.ref }}
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -156,8 +143,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.sha || github.ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -176,40 +161,3 @@ jobs:
           args="$(bash .github/scripts/go-race-packages.sh '${{ matrix.name }}')"
           # shellcheck disable=SC2086
           go test -race -count=1 -timeout 12m $args
-
-  upstream-status:
-    if: always() && github.event_name == 'repository_dispatch'
-    needs:
-      - frontend
-      - golangci-lint
-      - test
-      - postgres-compatibility
-      - test-race
-    runs-on: ubuntu-latest
-    steps:
-      - name: Publish upstream CI result on the tested commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-          UPSTREAM_CI_SHA: ${{ github.event.client_payload.sha }}
-          UPSTREAM_CI_RESULTS: ${{ join(needs.*.result, ',') }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ "$UPSTREAM_CI_RESULTS" == *failure* ]]; then
-            state=failure
-            description='One or more upstream CI jobs failed.'
-          elif [[ "$UPSTREAM_CI_RESULTS" == *cancelled* ]]; then
-            state=error
-            description='One or more upstream CI jobs were cancelled.'
-          else
-            state=success
-            description='All upstream CI jobs passed.'
-          fi
-
-          gh api --method POST \
-            "repos/${GITHUB_REPOSITORY}/statuses/${UPSTREAM_CI_SHA}" \
-            -f state="$state" \
-            -f context='Upstream CI' \
-            -f description="$description" \
-            -f target_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
