@@ -1292,7 +1292,7 @@ const AccountTableRow = memo(function AccountTableRow({
                                           t={t}
                                         />
                                       )}
-                                    <DaybreakBadge supported={account.daybreak_supported} />
+                                    <DaybreakBadge models={account.daybreak_models} />
                                   </div>
                                   {(account.at_only ||
                                     account.openai_responses_api ||
@@ -13800,7 +13800,7 @@ function AccountMobileCard({
                   {resetCredits}
                 </button>
               )}
-              <DaybreakBadge supported={account.daybreak_supported} />
+              <DaybreakBadge models={account.daybreak_models} />
               {isFullCard && creditBalance !== null && (
                 <button
                   type="button"
