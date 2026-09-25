@@ -242,6 +242,7 @@ func (h *Handler) buildAccountResponse(
 		GrokAPI:                      isGrokAccount,
 		AntigravityAPI:               isAntigravityAccount,
 		ClaudeAPI:                    isClaudeAccount,
+		ExcelBPSEnabled:              row.GetCredentialBool(auth.ExcelBPSCredentialKey),
 		ClaudeAuthKind:               claudeAuthKindForRow(row, isClaudeAccount),
 		ClaudeBaseURL:                row.GetCredential(auth.ClaudeBaseURLCredentialKey),
 		AntigravityAuthKind:          antigravityAuthKind,
