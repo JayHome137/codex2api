@@ -71,12 +71,14 @@ jobs:
           # Rebuild main from the upstream release tree while retaining only
           # this scheduler and the release marker needed for the next run.
           scheduler_file=$(mktemp)
-          git show HEAD:.github/workflows/upstream-sync.yml > "$scheduler_file"
+          git show "refs/remotes/origin/${TARGET_BRANCH}:.github/workflows/upstream-sync.yml" > "$scheduler_file"
           git read-tree --reset -u "$upstream_sha"
           mkdir -p .github/workflows
           cp "$scheduler_file" .github/workflows/upstream-sync.yml
           printf '%s\n' "$latest_tag" > .upstream-release
           rm -f "$scheduler_file"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "chore: sync upstream release ${latest_tag}"
           git push origin HEAD:refs/heads/main
