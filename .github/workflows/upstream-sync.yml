@@ -1,36 +1,34 @@
-name: Upstream Sync
+name: Upstream Release Sync
 
 on:
   schedule:
-    # GitHub Actions cron uses UTC; run once per day.
-    - cron: '17 3 * * *'
+    # 00:30 Asia/Shanghai = 16:30 UTC on the previous day.
+    - cron: '30 16 * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
-  pull-requests: write
 
 concurrency:
-  group: upstream-sync
+  group: upstream-release-sync
   cancel-in-progress: true
 
 env:
   UPSTREAM_REPOSITORY: james-6-23/codex2api
   TARGET_BRANCH: codex2api-custom
-  SYNC_BRANCH: automation/upstream-main-sync
 
 jobs:
-  detect-and-open-pr:
+  sync-release:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - name: Checkout custom branch
+      - name: Checkout release baseline
         uses: actions/checkout@v5
         with:
-          ref: ${{ env.TARGET_BRANCH }}
+          ref: main
           fetch-depth: 0
 
-      - name: Merge upstream main and open sync PR
+      - name: Sync the newest upstream release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -38,84 +36,87 @@ jobs:
           set -euo pipefail
 
           git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
-          git fetch --no-tags origin "refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
-          git fetch --no-tags upstream main
+          git fetch --no-tags origin \
+            "refs/heads/main:refs/remotes/origin/main" \
+            "refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
 
-          own_sha=$(git rev-parse "refs/remotes/origin/${TARGET_BRANCH}")
-          upstream_sha=$(git rev-parse refs/remotes/upstream/main)
-          echo "custom_sha=${own_sha}"
-          echo "upstream_main_sha=${upstream_sha}"
+          latest_tag=$(git ls-remote --tags --refs upstream 'v[0-9]*' \
+            | awk -F/ '{print $3}' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V \
+            | tail -n 1)
+          current_tag=$(sed -n '1p' .upstream-release 2>/dev/null || true)
 
-          if git merge-base --is-ancestor "$upstream_sha" "$own_sha"; then
+          if [[ -z "$latest_tag" ]]; then
+            echo "No semver release tag was found upstream."
+            exit 0
+          fi
+          echo "current_release=${current_tag:-<none>}"
+          echo "latest_release=${latest_tag}"
+
+          if [[ "$latest_tag" == "$current_tag" ]]; then
             {
-              echo "### Upstream sync"
+              echo "### Upstream release sync"
               echo
-              echo "No new upstream main commit is waiting to be merged."
-              echo
-              echo "- Custom branch: \`${own_sha}\`"
-              echo "- Upstream main: \`${upstream_sha}\`"
+              echo "No new upstream release is available."
+              echo "- Current release: \`${current_tag}\`"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          git switch --create "$SYNC_BRANCH" "$own_sha"
-          if ! git merge --no-edit --no-ff "$upstream_sha"; then
-            echo "Upstream merge has conflicts. No PR was pushed." >&2
-            git diff --name-only --diff-filter=U | sed 's/^/- /' | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 1
+          git fetch --no-tags upstream \
+            "refs/tags/${latest_tag}:refs/tags/upstream-${latest_tag}"
+          upstream_sha=$(git rev-parse "refs/tags/upstream-${latest_tag}^{commit}")
+
+          # Rebuild main from the upstream release tree while retaining only
+          # this scheduler and the release marker needed for the next run.
+          scheduler_file=$(mktemp)
+          git show HEAD:.github/workflows/upstream-sync.yml > "$scheduler_file"
+          git read-tree --reset -u "$upstream_sha"
+          mkdir -p .github/workflows
+          cp "$scheduler_file" .github/workflows/upstream-sync.yml
+          printf '%s\n' "$latest_tag" > .upstream-release
+          rm -f "$scheduler_file"
+          git add -A
+          git commit -m "chore: sync upstream release ${latest_tag}"
+          git push origin HEAD:refs/heads/main
+
+          # Merge the same release into the custom branch. Only the files that
+          # carry upstream-billing behavior prefer the custom side on conflict.
+          git switch --create custom-sync "refs/remotes/origin/${TARGET_BRANCH}"
+          merge_had_conflicts=false
+          if ! git merge --no-edit --no-commit --no-ff "$upstream_sha"; then
+            merge_had_conflicts=true
+            while IFS= read -r path; do
+              case "$path" in
+                admin/account_response_builder.go|admin/handler.go|admin/sub2_upstream_rate.go|admin/system_update.go|database/api_key_usage.go|database/billing.go|database/billing_test.go|database/image_user_billing_test.go|database/postgres.go|database/sqlite.go|database/sub2_upstream_billing.go|database/sub2_upstream_billing_test.go|database/usage_compaction_history_test.go|docs/sub2api-upstream-billing-phase1.md|frontend/src/api.ts|frontend/src/components/AccountQuickConfigSheet.tsx|frontend/src/components/Layout.tsx|frontend/src/lib/accountQuickConfig.ts|frontend/src/locales/en.json|frontend/src/locales/zh.json|frontend/src/pages/APIKeyUsagePortal.tsx|frontend/src/pages/Accounts.tsx|frontend/src/pages/Usage.tsx|frontend/src/types.ts|proxy/handler.go|proxy/sub2_upstream_probe.go|proxy/sub2_upstream_probe_test.go)
+                  git checkout --ours -- "$path"
+                  ;;
+                *)
+                  git checkout --theirs -- "$path"
+                  ;;
+              esac
+              git add -A -- "$path"
+            done < <(git diff --name-only --diff-filter=U)
           fi
 
-          sync_ref="refs/heads/${SYNC_BRANCH}"
-          existing_sync_sha=$(git ls-remote origin "$sync_ref" | awk 'NR == 1 { print $1 }')
-          if [[ -n "$existing_sync_sha" ]]; then
-            git push --force-with-lease="$sync_ref:$existing_sync_sha" origin "$SYNC_BRANCH"
+          git add -A
+          if [[ "$merge_had_conflicts" == true ]]; then
+            git commit -m "chore: sync upstream release ${latest_tag} preserving custom billing"
           else
-            git push origin "$SYNC_BRANCH"
+            git commit -m "chore: sync upstream release ${latest_tag}"
           fi
 
-          body_file=$(mktemp)
-          trap 'rm -f "$body_file"' EXIT
-          cat > "$body_file" <<EOF
-          ## Upstream main update
-
-          This PR merges the upstream \`main\` branch into \`${TARGET_BRANCH}\`.
-
-          - Upstream repository: \`${UPSTREAM_REPOSITORY}\`
-          - Upstream main: \`${upstream_sha}\`
-          - Custom branch before merge: \`${own_sha}\`
-
-          CI and security checks run on this PR. The merge is intentionally left for review; releases are built from \`${TARGET_BRANCH}\` after the validated merge.
-          EOF
-
-          pr_number=$(gh pr list \
-            --repo "$GITHUB_REPOSITORY" \
-            --state open \
-            --base "$TARGET_BRANCH" \
-            --head "$SYNC_BRANCH" \
-            --json number \
-            --jq '.[0].number // empty')
-
-          if [[ -n "$pr_number" ]]; then
-            gh pr edit "$pr_number" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "chore: sync upstream main" \
-              --body-file "$body_file"
-            pr_url=$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json url --jq '.url')
-          else
-            pr_url=$(gh pr create \
-              --repo "$GITHUB_REPOSITORY" \
-              --base "$TARGET_BRANCH" \
-              --head "$SYNC_BRANCH" \
-              --title "chore: sync upstream main" \
-              --body-file "$body_file")
-          fi
+          custom_sha=$(git rev-parse HEAD)
+          expected_custom_sha=$(git rev-parse "refs/remotes/origin/${TARGET_BRANCH}")
+          git push --force-with-lease="refs/heads/${TARGET_BRANCH}:${expected_custom_sha}" \
+            origin "${custom_sha}:refs/heads/${TARGET_BRANCH}"
 
           {
-            echo "### Upstream sync"
+            echo "### Upstream release sync"
             echo
-            echo "A sync PR was created or updated."
-            echo
-            echo "- PR: ${pr_url}"
-            echo "- Upstream main: \`${upstream_sha}\`"
-            echo "- Custom branch: \`${own_sha}\`"
+            echo "Synchronized upstream release \`${latest_tag}\` (`${upstream_sha}\`)."
+            echo "- main baseline updated"
+            echo "- custom branch updated: \`${custom_sha}\`"
+            echo "- conflict policy: custom billing files prefer custom; all other conflicts prefer upstream"
           } >> "$GITHUB_STEP_SUMMARY"

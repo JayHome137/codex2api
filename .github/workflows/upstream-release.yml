@@ -64,15 +64,9 @@ jobs:
           done
 
           git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
-          git fetch --no-tags upstream main
-          upstream_main_sha=$(git rev-parse refs/remotes/upstream/main)
-          if ! git merge-base --is-ancestor "$upstream_main_sha" "$SOURCE_SHA"; then
-            echo "The validated custom commit does not contain the current upstream main; no release will be promoted."
-            exit 0
-          fi
-
           upstream_tag=$(git ls-remote --tags --refs upstream 'v[0-9]*' \
             | awk -F/ '{print $3}' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
             | sort -V \
             | tail -n 1)
           if [[ ! "$upstream_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -82,8 +76,8 @@ jobs:
 
           git fetch --no-tags upstream "refs/tags/${upstream_tag}:refs/tags/upstream-${upstream_tag}"
           upstream_tag_sha=$(git rev-parse "refs/tags/upstream-${upstream_tag}^{commit}")
-          if ! git merge-base --is-ancestor "$upstream_tag_sha" "$upstream_main_sha"; then
-            echo "The latest upstream tag is not reachable from upstream main; no release will be promoted."
+          if ! git merge-base --is-ancestor "$upstream_tag_sha" "$SOURCE_SHA"; then
+            echo "The validated custom commit does not contain the upstream release ${upstream_tag}; no release will be promoted."
             exit 0
           fi
 
