@@ -1,0 +1,29 @@
+package admin
+
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/codex2api/proxy"
+)
+
+func (h *Handler) refreshImportedDaybreak(ctx context.Context, id int64) {
+	account := h.store.FindByID(id)
+	if account == nil || !isCodexOAuthAccount(account) || account.IsCodexAgentIdentity() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	snapshot := account.BeginDaybreakObservation()
+	manifest, err := proxy.FetchCodexModelsManifest(ctx, account, h.store.ResolveProxyForAccount(account), "", "")
+	if err == nil {
+		err = (proxy.DaybreakObservation{Account: account, Snapshot: snapshot, Body: manifest.Body}).Save(ctx, h.db)
+		if err == nil {
+			_, _ = proxy.LearnModelsFromManifest(ctx, h.db, manifest.Body, time.Now())
+		}
+	}
+	if err != nil {
+		log.Printf("[账号 %d] Daybreak 能力检查失败，保留已有结果: %v", id, err)
+	}
+}

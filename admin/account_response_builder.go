@@ -377,6 +377,10 @@ func (h *Handler) buildAccountResponse(
 		if credits, ok := runtimeAccount.GetRateLimitResetCredits(); ok {
 			resp.RateLimitResetCredits = &credits
 		}
+		daybreak := runtimeAccount.DaybreakSnapshot()
+		resp.DaybreakSupported = len(daybreak.Models) > 0
+		resp.DaybreakModels = daybreak.Models
+		resp.DaybreakCheckedAt = daybreak.CheckedAt / int64(time.Second)
 		if applicable, ok := runtimeAccount.GetApplicableResetCredits(); ok {
 			resp.ApplicableResetCredits = &applicable
 		}
