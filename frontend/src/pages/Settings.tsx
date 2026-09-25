@@ -2195,6 +2195,7 @@ export default function Settings() {
     proxy_pool_enabled: false,
     fast_scheduler_enabled: false,
     scheduler_engine: 'legacy',
+    auto_reset_credits_on_exhaustion_enabled: false,
     auto_reset_credits_enabled: false,
     auto_reset_credits_before_expiry_min: 60,
     auto_activate_5h_window_enabled: false,
@@ -3384,6 +3385,17 @@ export default function Settings() {
                 icon={<RefreshCw className="size-4" />}
               >
                 <div className={cn(SETTINGS_SWITCH_GRID, 'items-stretch')}>
+                  <SettingField
+                    label={t('settings.autoResetCreditsOnExhaustionEnabled')}
+                    description={t('settings.autoResetCreditsOnExhaustionDesc')}
+                    layout="switch"
+                    className="h-full"
+                  >
+                    <Switch
+                      checked={settingsForm.auto_reset_credits_on_exhaustion_enabled}
+                      onCheckedChange={(checked) => autoSaveBooleanField('auto_reset_credits_on_exhaustion_enabled', checked)}
+                    />
+                  </SettingField>
                   <SettingField
                     label={t('settings.autoResetCreditsEnabled')}
                     description={t('settings.autoResetCreditsEnabledDesc')}
