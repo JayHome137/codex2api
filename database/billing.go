@@ -493,6 +493,8 @@ func normalizeBillingModelName(model string) string {
 	} else if idx := strings.LastIndex(model, "/"); idx != -1 {
 		model = model[idx+1:]
 	}
+	// Daybreak 是访问程序，计费及价格覆盖始终复用基础模型。
+	model = strings.TrimSuffix(strings.TrimSuffix(model, "-daybreak-blue"), "-daybreak-red")
 	return strings.TrimLeft(model, "/")
 }
 

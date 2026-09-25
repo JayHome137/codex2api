@@ -3866,6 +3866,7 @@ func (h *Handler) Responses(c *gin.Context) {
 	} else if nativeRemoteCompactionV2 {
 		rawBody, requestModel, mappedModel, mappingApplied = h.applyConfiguredCompactModelMappingToBody(rawBody, supportedModels)
 	} else {
+		rememberDaybreakRequest(c, rawBody)
 		rawBody, requestModel, mappedModel, mappingApplied = h.applyConfiguredModelMappingToBody(rawBody, supportedModels)
 	}
 	rawBody, _ = normalizePortableResponsesCompactionHistory(rawBody)
@@ -6733,6 +6734,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	h.capturePromptRequestIngress(c, rawBody)
 
 	supportedModels := h.supportedModelIDs(c.Request.Context())
+	rememberDaybreakRequest(c, rawBody)
 	rawBody, requestModel, mappedModel, mappingApplied := h.applyConfiguredModelMappingToBody(rawBody, supportedModels)
 
 	// Validate request
@@ -8949,6 +8951,9 @@ func (h *Handler) ListModels(c *gin.Context) {
 
 func (h *Handler) supportedModelIDs(ctx context.Context) []string {
 	models := SupportedModelIDs(ctx, h.db)
+	if h != nil && h.store != nil {
+		models = append(models, DaybreakModelIDs(h.store.Accounts(), models)...)
+	}
 	seen := make(map[string]struct{}, len(models))
 	for _, model := range models {
 		seen[strings.ToLower(strings.TrimSpace(model))] = struct{}{}
