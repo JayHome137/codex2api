@@ -1,0 +1,121 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    # GitHub Actions cron uses UTC; run once per day.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_REPOSITORY: james-6-23/codex2api
+  TARGET_BRANCH: codex2api-custom
+  SYNC_BRANCH: automation/upstream-main-sync
+
+jobs:
+  detect-and-open-pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout custom branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+
+      - name: Merge upstream main and open sync PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch --no-tags origin "refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+          git fetch --no-tags upstream main
+
+          own_sha=$(git rev-parse "refs/remotes/origin/${TARGET_BRANCH}")
+          upstream_sha=$(git rev-parse refs/remotes/upstream/main)
+          echo "custom_sha=${own_sha}"
+          echo "upstream_main_sha=${upstream_sha}"
+
+          if git merge-base --is-ancestor "$upstream_sha" "$own_sha"; then
+            {
+              echo "### Upstream sync"
+              echo
+              echo "No new upstream main commit is waiting to be merged."
+              echo
+              echo "- Custom branch: \`${own_sha}\`"
+              echo "- Upstream main: \`${upstream_sha}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git switch --create "$SYNC_BRANCH" "$own_sha"
+          if ! git merge --no-edit --no-ff "$upstream_sha"; then
+            echo "Upstream merge has conflicts. No PR was pushed." >&2
+            git diff --name-only --diff-filter=U | sed 's/^/- /' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          sync_ref="refs/heads/${SYNC_BRANCH}"
+          existing_sync_sha=$(git ls-remote origin "$sync_ref" | awk 'NR == 1 { print $1 }')
+          if [[ -n "$existing_sync_sha" ]]; then
+            git push --force-with-lease="$sync_ref:$existing_sync_sha" origin "$SYNC_BRANCH"
+          else
+            git push origin "$SYNC_BRANCH"
+          fi
+
+          body_file=$(mktemp)
+          trap 'rm -f "$body_file"' EXIT
+          cat > "$body_file" <<EOF
+          ## Upstream main update
+
+          This PR merges the upstream \`main\` branch into \`${TARGET_BRANCH}\`.
+
+          - Upstream repository: \`${UPSTREAM_REPOSITORY}\`
+          - Upstream main: \`${upstream_sha}\`
+          - Custom branch before merge: \`${own_sha}\`
+
+          CI and security checks run on this PR. The merge is intentionally left for review; releases are built from \`${TARGET_BRANCH}\` after the validated merge.
+          EOF
+
+          pr_number=$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --base "$TARGET_BRANCH" \
+            --head "$SYNC_BRANCH" \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [[ -n "$pr_number" ]]; then
+            gh pr edit "$pr_number" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "chore: sync upstream main" \
+              --body-file "$body_file"
+            pr_url=$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json url --jq '.url')
+          else
+            pr_url=$(gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base "$TARGET_BRANCH" \
+              --head "$SYNC_BRANCH" \
+              --title "chore: sync upstream main" \
+              --body-file "$body_file")
+          fi
+
+          {
+            echo "### Upstream sync"
+            echo
+            echo "A sync PR was created or updated."
+            echo
+            echo "- PR: ${pr_url}"
+            echo "- Upstream main: \`${upstream_sha}\`"
+            echo "- Custom branch: \`${own_sha}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
