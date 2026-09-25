@@ -1,19 +1,16 @@
 name: Publish Custom Release
 
 on:
-  workflow_run:
-    workflows:
-      - CI
-      - Security Scan
-    types:
-      - completed
+  push:
+    branches:
+      - codex2api-custom
 
 permissions:
   actions: read
   contents: write
 
 concurrency:
-  group: custom-release-${{ github.event.workflow_run.head_sha }}
+  group: custom-release-${{ github.sha }}
   cancel-in-progress: true
 
 env:
@@ -22,9 +19,6 @@ env:
 
 jobs:
   promote-validated-custom:
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'codex2api-custom'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -35,25 +29,39 @@ jobs:
       - name: Checkout validated custom commit
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Verify checks and promote the upstream version
         id: promote
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_SHA: ${{ github.sha }}
         shell: bash
         run: |
           set -euo pipefail
 
-          runs_json=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SOURCE_SHA}&event=push&per_page=100")
-          ci_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "CI" and .head_branch == env.TARGET_BRANCH) | .conclusion] | last // ""' <<< "$runs_json")
-          security_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "Security Scan" and .head_branch == env.TARGET_BRANCH) | .conclusion] | last // ""' <<< "$runs_json")
-          if [[ "$ci_conclusion" != "success" || "$security_conclusion" != "success" ]]; then
-            echo "The matching CI and Security Scan runs are not both successful yet; no release will be promoted."
-            exit 0
-          fi
+          ci_conclusion=""
+          security_conclusion=""
+          for attempt in $(seq 1 60); do
+            runs_json=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SOURCE_SHA}&event=push&per_page=100")
+            ci_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "CI" and .head_branch == env.TARGET_BRANCH) | .conclusion] | last // ""' <<< "$runs_json")
+            security_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "Security Scan" and .head_branch == env.TARGET_BRANCH) | .conclusion] | last // ""' <<< "$runs_json")
+            ci_status=$(jq -r '[.workflow_runs[] | select(.name == "CI" and .head_branch == env.TARGET_BRANCH) | .status] | last // ""' <<< "$runs_json")
+            security_status=$(jq -r '[.workflow_runs[] | select(.name == "Security Scan" and .head_branch == env.TARGET_BRANCH) | .status] | last // ""' <<< "$runs_json")
+            if [[ "$ci_conclusion" == "success" && "$security_conclusion" == "success" ]]; then
+              break
+            fi
+            if [[ "$ci_conclusion" =~ ^(failure|cancelled|timed_out|action_required|startup_failure)$ || "$security_conclusion" =~ ^(failure|cancelled|timed_out|action_required|startup_failure)$ ]]; then
+              echo "CI or Security Scan failed: CI=${ci_conclusion:-$ci_status}, Security=${security_conclusion:-$security_status}" >&2
+              exit 1
+            fi
+            if [[ "$attempt" == 60 ]]; then
+              echo "Timed out waiting for CI and Security Scan: CI=${ci_conclusion:-$ci_status}, Security=${security_conclusion:-$security_status}" >&2
+              exit 1
+            fi
+            sleep 20
+          done
 
           git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
           git fetch --no-tags upstream main
