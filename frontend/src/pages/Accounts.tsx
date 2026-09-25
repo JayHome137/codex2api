@@ -76,7 +76,6 @@ import type {
   AccountLiveStateResponse,
   UpstreamChannel,
   OpenAIResponsesBalanceResponse,
-  ChannelMonitorBillingSnapshot,
   SubscriptionFilter,
 } from "../types";
 import { SUBSCRIPTION_FILTER_OPTIONS } from "../types";
@@ -90,10 +89,6 @@ import {
   type AccountOperationResultsState,
 } from "../lib/accountOperationResults";
 import { operationProgressMessage } from "../lib/operationProgressMessage";
-import {
-  formatChannelMonitorMultiplier,
-  resolveChannelMonitorRate,
-} from "../lib/channelMonitorBilling";
 import {
   readOperationResultsVisibility,
   writeOperationResultsVisibility,
@@ -204,7 +199,6 @@ import {
   ArrowUpRight,
   Settings2,
   ListChecks,
-  RadioTower,
 } from "lucide-react";
 import {
   CLAUDE_TIMEZONE_CUSTOM,
@@ -232,7 +226,6 @@ import AccountQuotaDistributionChart from "../components/AccountQuotaDistributio
 import AccountRateLimitRecoveryChart from "../components/AccountRateLimitRecoveryChart";
 import AccountGroupMultiSelect from "../components/AccountGroupMultiSelect";
 import AccountQuickConfigSheet from "../components/AccountQuickConfigSheet";
-import ChannelMonitorConfigDialog from "../components/ChannelMonitorConfigDialog";
 import { useImportGroupIds } from "../hooks/useImportGroupIds";
 import AccountGroupFilterSelect, {
   EMPTY_ACCOUNT_GROUP_FILTER,
@@ -1079,7 +1072,6 @@ interface AccountRowActions {
   openDetail: (account: AccountRow) => void;
   openSchedulerEditor: (account: AccountRow) => void;
   openQuickConfig: (account: AccountRow) => void;
-  openChannelMonitor: (account: AccountRow) => void;
   openQuickGroupEditor: (account: AccountRow) => void;
   openQuickProxyEditor: (account: AccountRow) => void;
   openUsage: (account: AccountRow) => void;
@@ -1136,7 +1128,6 @@ function useCountdownRemaining(until?: string): string {
 // 整树重渲染;行数据没变时这里直接跳过,交互卡顿的大头就在这。
 const AccountTableRow = memo(function AccountTableRow({
   account,
-  channelMonitorBilling,
   sequence,
   selected,
   detailOpen,
@@ -1152,7 +1143,6 @@ const AccountTableRow = memo(function AccountTableRow({
   actions,
 }: {
   account: AccountRow;
-  channelMonitorBilling?: ChannelMonitorBillingSnapshot;
   sequence: number;
   selected: boolean;
   detailOpen: boolean;
@@ -1518,11 +1508,7 @@ const AccountTableRow = memo(function AccountTableRow({
                             )}
                             {visibleColumns.billed && (
                               <TableCell className="text-[13px] text-muted-foreground whitespace-nowrap">
-                                <BilledCell
-                                  account={account}
-                                  channelMonitorBilling={channelMonitorBilling}
-                                  onOpenOfficial={actions.openOfficialUsage}
-                                />
+                                <BilledCell account={account} onOpenOfficial={actions.openOfficialUsage} />
                               </TableCell>
                             )}
                             {visibleColumns.importTime && (
@@ -1612,9 +1598,6 @@ const AccountTableRow = memo(function AccountTableRow({
                                     includeTest={false}
                                     includeDelete={false}
                                     onTest={() => actions.openTesting(account)}
-                                    onChannelMonitor={() =>
-                                      actions.openChannelMonitor(account)
-                                    }
                                     onRefresh={() => actions.refresh(account)}
                                     onGenerateAuthJson={() =>
                                       actions.generateAuthJson(account)
@@ -1645,7 +1628,6 @@ const AccountTableRow = memo(function AccountTableRow({
 // 行数据不变则整卡跳过。
 const AccountCardItem = memo(function AccountCardItem({
   account,
-  channelMonitorBilling,
   sequence,
   selected,
   detailOpen,
@@ -1662,7 +1644,6 @@ const AccountCardItem = memo(function AccountCardItem({
   actions,
 }: {
   account: AccountRow;
-  channelMonitorBilling?: ChannelMonitorBillingSnapshot;
   sequence: number;
   selected: boolean;
   detailOpen: boolean;
@@ -1681,7 +1662,6 @@ const AccountCardItem = memo(function AccountCardItem({
   return (
     <AccountMobileCard
       account={account}
-      channelMonitorBilling={channelMonitorBilling}
       sequence={sequence}
       selected={selected}
       detailOpen={detailOpen}
@@ -1702,7 +1682,6 @@ const AccountCardItem = memo(function AccountCardItem({
       onEditProxy={() => actions.openQuickProxyEditor(account)}
       onUsage={() => actions.openUsage(account)}
       onOpenOfficialUsage={() => actions.openOfficialUsage(account)}
-      onChannelMonitor={() => actions.openChannelMonitor(account)}
       onTest={() => actions.openTesting(account)}
       onRefresh={() => actions.refresh(account)}
       onGenerateAuthJson={() => actions.generateAuthJson(account)}
@@ -1882,7 +1861,6 @@ export default function Accounts() {
   const [cleaningError, setCleaningError] = useState(false);
   const [testingAccount, setTestingAccount] = useState<AccountRow | null>(null);
   const [quickConfigAccount, setQuickConfigAccount] = useState<AccountRow | null>(null);
-  const [channelMonitorAccount, setChannelMonitorAccount] = useState<AccountRow | null>(null);
   const [usageAccount, setUsageAccount] = useState<AccountRow | null>(null);
   // 用量弹窗打开时停在哪个 tab。列表里点「官方结算」成本直接落到官方统计,
   // 其余入口保持默认的概览。
@@ -2849,45 +2827,6 @@ export default function Accounts() {
     () => data.accounts.map((account) => account.id),
     [data.accounts],
   );
-  const responsesAccountIDsKey = useMemo(
-    () => data.accounts
-      .filter((account) => account.openai_responses_api)
-      .map((account) => account.id)
-      .join(","),
-    [data.accounts],
-  );
-  const [channelMonitorBillingByAccount, setChannelMonitorBillingByAccount] = useState<
-    Record<number, ChannelMonitorBillingSnapshot>
-  >({});
-  const refreshChannelMonitorBilling = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const response = await api.getChannelMonitorBillingRates(signal);
-      if (signal?.aborted) return;
-      const next: Record<number, ChannelMonitorBillingSnapshot> = {};
-      for (const item of response.items) {
-        if (item.billing.data) next[item.account_id] = item.billing;
-      }
-      setChannelMonitorBillingByAccount(next);
-    } catch (error) {
-      if (!signal?.aborted) console.warn("channel monitor billing rates load failed:", error);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (providerView !== "codex" || !responsesAccountIDsKey) {
-      setChannelMonitorBillingByAccount({});
-      return undefined;
-    }
-    const controller = new AbortController();
-    void refreshChannelMonitorBilling(controller.signal);
-    const timer = window.setInterval(() => {
-      if (!document.hidden) void refreshChannelMonitorBilling(controller.signal);
-    }, 60_000);
-    return () => {
-      window.clearInterval(timer);
-      controller.abort();
-    };
-  }, [providerView, refreshChannelMonitorBilling, responsesAccountIDsKey]);
   const applyAccountLiveState = useCallback((response: AccountLiveStateResponse) => {
     setData((current) => {
       const accounts = mergeAccountLiveState(current.accounts, response);
@@ -6034,7 +5973,6 @@ export default function Accounts() {
     openDetail: openAccountDetail,
     openSchedulerEditor,
     openQuickConfig: (account) => setQuickConfigAccount(account),
-    openChannelMonitor: (account) => setChannelMonitorAccount(account),
     openQuickGroupEditor,
     openQuickProxyEditor: (account) => setQuickProxyAccount(account),
     openUsage: (account) => {
@@ -6062,7 +6000,6 @@ export default function Accounts() {
       openDetail: (a) => rowActionsImplRef.current?.openDetail(a),
       openSchedulerEditor: (a) => rowActionsImplRef.current?.openSchedulerEditor(a),
       openQuickConfig: (a) => rowActionsImplRef.current?.openQuickConfig(a),
-      openChannelMonitor: (a) => rowActionsImplRef.current?.openChannelMonitor(a),
       openQuickGroupEditor: (a) => rowActionsImplRef.current?.openQuickGroupEditor(a),
       openQuickProxyEditor: (a) => rowActionsImplRef.current?.openQuickProxyEditor(a),
       openUsage: (a) => rowActionsImplRef.current?.openUsage(a),
@@ -7373,7 +7310,6 @@ export default function Accounts() {
                       <AccountCardItem
                         key={account.id}
                         account={account}
-                        channelMonitorBilling={channelMonitorBillingByAccount[account.id]}
                         sequence={(currentPage - 1) * pageSize + index + 1}
                         selected={selected.has(account.id)}
                         detailOpen={detailAccountId === account.id}
@@ -7632,7 +7568,6 @@ export default function Accounts() {
                         <AccountTableRow
                           key={account.id}
                           account={account}
-                          channelMonitorBilling={channelMonitorBillingByAccount[account.id]}
                           sequence={(currentPage - 1) * pageSize + index + 1}
                           selected={selected.has(account.id)}
                           detailOpen={detailAccountId === account.id}
@@ -9039,11 +8974,6 @@ export default function Accounts() {
               if (!detailAccount) return;
               setQuickConfigAccount(detailAccount);
             }}
-            onChannelMonitor={
-              detailAccount?.openai_responses_api && !detailAccount.grok_api
-                ? () => setChannelMonitorAccount(detailAccount)
-                : undefined
-            }
             onEdit={() => {
               if (!detailAccount) return;
               openSchedulerEditor(detailAccount);
@@ -9104,13 +9034,6 @@ export default function Accounts() {
             show={Boolean(quickConfigAccount)}
             onClose={() => setQuickConfigAccount(null)}
             onSaved={() => void reloadSilently()}
-          />
-
-          <ChannelMonitorConfigDialog
-            account={channelMonitorAccount}
-            show={Boolean(channelMonitorAccount)}
-            onClose={() => setChannelMonitorAccount(null)}
-            onSaved={() => void refreshChannelMonitorBilling()}
           />
 
           <Modal
@@ -13258,7 +13181,6 @@ function AccountRowActionsMenu({
   includeTest = true,
   includeDelete = true,
   onTest,
-  onChannelMonitor,
   onRefresh,
   onGenerateAuthJson,
   onToggleEnabled,
@@ -13275,7 +13197,6 @@ function AccountRowActionsMenu({
   includeTest?: boolean;
   includeDelete?: boolean;
   onTest: () => void;
-  onChannelMonitor?: () => void;
   onRefresh: () => void;
   onGenerateAuthJson: () => void;
   onToggleEnabled: () => void;
@@ -13303,16 +13224,6 @@ function AccountRowActionsMenu({
             label: t("accounts.testConnection"),
             icon: <Zap className="size-3.5" />,
             onSelect: onTest,
-          },
-        ]
-      : []),
-    ...(account.openai_responses_api && !account.grok_api && onChannelMonitor
-      ? [
-          {
-            key: "channel-monitor",
-            label: "渠道监控",
-            icon: <RadioTower className="size-3.5" />,
-            onSelect: onChannelMonitor,
           },
         ]
       : []),
@@ -13579,7 +13490,6 @@ function GroupChipList({
 
 function AccountMobileCard({
   account,
-  channelMonitorBilling,
   sequence,
   selected,
   detailOpen = false,
@@ -13610,10 +13520,8 @@ function AccountMobileCard({
   onDelete,
   onUsageRefreshed,
   onOpenOfficialUsage,
-  onChannelMonitor,
 }: {
   account: AccountRow;
-  channelMonitorBilling?: ChannelMonitorBillingSnapshot;
   sequence: number;
   selected: boolean;
   detailOpen?: boolean;
@@ -13645,7 +13553,6 @@ function AccountMobileCard({
   onUsageRefreshed?: () => void;
   // 成本列的官方胶囊点击后跳到用量弹窗的官方统计 tab。
   onOpenOfficialUsage?: () => void;
-  onChannelMonitor?: () => void;
 }) {
   const displayName = account.openai_responses_api
     ? formatAccountName(account)
@@ -13911,7 +13818,6 @@ function AccountMobileCard({
                   >
                     <BilledCell
                       account={account}
-                      channelMonitorBilling={channelMonitorBilling}
                       onOpenOfficial={onOpenOfficialUsage}
                     />
                   </AccountCardMetric>
@@ -14018,7 +13924,6 @@ function AccountMobileCard({
           refreshing={refreshing}
           authJsonExporting={authJsonExporting}
           onTest={onTest}
-          onChannelMonitor={onChannelMonitor}
           onRefresh={onRefresh}
           onGenerateAuthJson={onGenerateAuthJson}
           onToggleEnabled={onToggleEnabled}
@@ -14680,49 +14585,15 @@ function APIAccountBalanceBadge({ accountId }: { accountId: number }) {
   );
 }
 
-function ChannelMonitorRateBadge({
-  billing,
-}: {
-  billing?: ChannelMonitorBillingSnapshot;
-}) {
-  const rate = resolveChannelMonitorRate(billing?.data, Date.now());
-  if (rate == null) return null;
-
-  const current = billing?.status === "ok";
-  const lastSuccess = billing?.success_at
-    ? formatRelativeTime(billing.success_at)
-    : "未知";
-  const title = current
-    ? `上游当前计费倍率，上次探测 ${lastSuccess}`
-    : `上游最近一次成功计费倍率，成功于 ${lastSuccess}\n当前倍率探测状态：${billing?.status ?? "unknown"}`;
-
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-0.5 font-mono text-[11px] tabular-nums ring-1 ring-inset",
-        current
-          ? "bg-sky-500/10 text-sky-700 ring-sky-500/20 dark:text-sky-300"
-          : "bg-amber-500/10 text-amber-700 ring-amber-500/20 dark:text-amber-300",
-      )}
-      title={title}
-    >
-      <Gauge className="size-3 shrink-0" aria-hidden />
-      倍率 ×{formatChannelMonitorMultiplier(rate)}
-    </span>
-  );
-}
-
 // 成本列并排两套账,颜色区分口径:
 // 上行(石板色)是网关自己的日志算出来的,只含经由本网关转发的请求;
 // 下行(琥珀色)是 OpenAI 官方结算数,还包含用户直接用官方客户端的消耗。
 // 两者不该相等,差额就是账号在网关之外的用量。
 function BilledCell({
   account,
-  channelMonitorBilling,
   onOpenOfficial,
 }: {
   account: AccountRow;
-  channelMonitorBilling?: ChannelMonitorBillingSnapshot;
   // 传了才把官方胶囊变成可点按钮（跳到用量弹窗的官方统计 tab）。
   onOpenOfficial?: (account: AccountRow) => void;
 }) {
@@ -14757,7 +14628,7 @@ function BilledCell({
     (account.usage_percent_5h !== null && account.usage_percent_5h !== undefined) ||
     !!account.reset_5h_at;
   const visibleH5 = has5hWindow ? h5 : null;
-  if (visibleH5 === null && d7 === null && !showOfficial && !showAPIBalance && !channelMonitorBilling?.data) {
+  if (visibleH5 === null && d7 === null && !showOfficial && !showAPIBalance) {
     return <span className="text-[12px] text-muted-foreground">-</span>;
   }
   const longLabel = formatLongUsageWindowLabel(account);
@@ -14775,7 +14646,6 @@ function BilledCell({
   return (
     <div className="account-billed-cell flex flex-col items-start gap-1">
       {showAPIBalance && <APIAccountBalanceBadge accountId={account.id} />}
-      {showAPIBalance && <ChannelMonitorRateBadge billing={channelMonitorBilling} />}
       {(visibleH5 !== null || d7 !== null) && (
         <span
           className="account-billed-gateway inline-flex items-center gap-1 whitespace-nowrap rounded-md bg-slate-500/10 px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-slate-700 ring-1 ring-inset ring-slate-500/20 dark:text-slate-300"

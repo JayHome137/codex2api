@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, CheckCircle2, ChevronRight, Copy, Loader2, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
+import { Check, CheckCircle2, ChevronRight, Copy, Loader2, RefreshCw, XCircle } from "lucide-react";
 import { api, getAdminKey } from "../api";
 import type { AccountRow } from "../types";
 import { claudeTestTokenMetrics, readClaudeTestEvents } from "../lib/claudeConnectionTest";
@@ -8,7 +8,6 @@ import type { ClaudeTestDiagnostics } from "../lib/claudeConnectionTest";
 import { cn } from "../lib/utils";
 import { useToast } from "../hooks/useToast";
 import Modal from "./Modal";
-import ModelDetectorModal from "./ModelDetectorModal";
 import { Button } from "./ui/button";
 import { Select } from "./ui/select";
 
@@ -28,7 +27,6 @@ export default function ClaudeConnectionTestModal({ account, onClose, onSettled 
   const [diagnostics, setDiagnostics] = useState<ClaudeTestDiagnostics | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [copied, setCopied] = useState(false);
-  const [detectorOpen, setDetectorOpen] = useState(false);
   const settledRef = useRef(false);
   const onSettledRef = useRef(onSettled);
   const translationRef = useRef(t);
@@ -185,7 +183,6 @@ export default function ClaudeConnectionTestModal({ account, onClose, onSettled 
   };
 
   return (
-    <>
     <Modal
       show
       title={t("accounts.testConnectionTitle", { account: account.email || account.name || `#${account.id}` })}
@@ -194,16 +191,10 @@ export default function ClaudeConnectionTestModal({ account, onClose, onSettled 
       onClose={onClose}
       footer={(
         <div className="flex w-full flex-wrap items-center justify-end gap-2">
-          <div className="mr-auto flex flex-wrap items-center gap-2">
-            <Button variant="ghost" size="sm" disabled={running || !diagnostics} onClick={() => void copyDiagnostics()}>
-              {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-              {copied ? t("claude.testCopied") : t("claude.testCopy")}
-            </Button>
-            <Button variant="ghost" size="sm" disabled={running || !model} onClick={() => setDetectorOpen(true)}>
-              <ShieldCheck className="size-3.5" />
-              {t("accounts.detectorOpen")}
-            </Button>
-          </div>
+          <Button variant="ghost" size="sm" className="mr-auto" disabled={running || !diagnostics} onClick={() => void copyDiagnostics()}>
+            {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+            {copied ? t("claude.testCopied") : t("claude.testCopy")}
+          </Button>
           <Button variant="outline" size="sm" onClick={onClose}>{t("common.close")}</Button>
           <Button size="sm" disabled={running || !model} onClick={() => setAttempt((value) => value + 1)}>
             <RefreshCw className={cn("size-3.5", running && "animate-spin")} />{t("claude.testRetry")}
@@ -301,14 +292,5 @@ export default function ClaudeConnectionTestModal({ account, onClose, onSettled 
         ) : null}
       </div>
     </Modal>
-    {detectorOpen ? (
-      <ModelDetectorModal
-        account={account}
-        requestModels={modelOptions}
-        defaultModel={model}
-        onClose={() => setDetectorOpen(false)}
-      />
-    ) : null}
-    </>
   );
 }

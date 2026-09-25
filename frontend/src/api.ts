@@ -57,9 +57,6 @@ import type {
   AccountPageStatsResponse,
   AccountLiveStateResponse,
   ChartAggregation,
-  ChannelMonitorConfig,
-  ChannelMonitorBillingRatesResponse,
-  ChannelMonitorListResponse,
   CreateAccountResponse,
   CreateAPIKeyResponse,
   CreateAPIKeyRequest,
@@ -133,7 +130,6 @@ import type {
   CodexUserAgentCatalog,
   CodexUserAgentPreview,
   UpdateAccountSchedulerRequest,
-  UpdateChannelMonitorConfigRequest,
   UpdateAPIKeyRequest,
   UpdatePromptFilterNewAPIBindingRequest,
   UpdateOAuthAccountRequest,
@@ -660,22 +656,6 @@ export const api = {
       `/accounts/${id}/openai-responses/balance${force ? '?refresh=1' : ''}`,
       { signal, timeoutMs: 25_000 },
     ),
-  getChannelMonitorConfig: (id: number, signal?: AbortSignal) =>
-    request<ChannelMonitorConfig>(`/accounts/${id}/channel-monitor`, { signal }),
-  updateChannelMonitorConfig: (id: number, data: UpdateChannelMonitorConfigRequest) =>
-    request<ChannelMonitorConfig>(`/accounts/${id}/channel-monitor`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    }),
-  getChannelMonitors: (signal?: AbortSignal) =>
-    request<ChannelMonitorListResponse>('/channel-monitors', { signal }),
-  getChannelMonitorBillingRates: (signal?: AbortSignal) =>
-    request<ChannelMonitorBillingRatesResponse>('/channel-monitors/billing-rates', { signal }),
-  probeChannelMonitor: (id: number) =>
-    request<MessageResponse>(`/channel-monitors/${id}/probe`, {
-      method: 'POST',
-      timeoutMs: 80_000,
-    }),
   addGrokAccount: (data: AddGrokAccountRequest) =>
     request<CreateAccountResponse>('/accounts/grok', { method: 'POST', body: JSON.stringify(data) }),
   fetchGrokModels: (data: AddGrokAccountRequest) =>
