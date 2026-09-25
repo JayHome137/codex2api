@@ -345,7 +345,7 @@ func writeExcelBPSFailure(c *gin.Context, stream bool, status int, code, message
 	if c == nil {
 		return
 	}
-	if !stream {
+	if !stream || !c.Writer.Written() {
 		c.JSON(status, gin.H{"error": gin.H{"type": "upstream_error", "code": code, "message": message}})
 		return
 	}

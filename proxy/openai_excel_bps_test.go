@@ -118,3 +118,37 @@ func TestForwardExcelBPSDoesNotTreatFailedCompletedAsSuccess(t *testing.T) {
 		t.Fatalf("failed completed event leaked provider detail: %s", recorder.Body.String())
 	}
 }
+
+func TestWriteExcelBPSFailureUsesJSONBeforeStreamingResponseIsCommitted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+
+	writeExcelBPSFailure(ctx, true, http.StatusBadRequest, "basispoints_request_invalid", "unsupported request")
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	if body := recorder.Body.String(); strings.Contains(body, "response.failed") || !strings.Contains(body, "basispoints_request_invalid") {
+		t.Fatalf("unexpected pre-commit failure body: %s", body)
+	}
+}
+
+func TestWriteExcelBPSFailureUsesSSEAfterStreamingResponseIsCommitted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	_, _ = ctx.Writer.Write([]byte("prefix"))
+
+	writeExcelBPSFailure(ctx, true, http.StatusBadRequest, "basispoints_request_invalid", "unsupported request")
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want committed status %d", recorder.Code, http.StatusOK)
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, "event: response.failed") || !strings.Contains(body, "basispoints_request_invalid") {
+		t.Fatalf("unexpected committed failure body: %s", body)
+	}
+}
