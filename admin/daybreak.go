@@ -27,3 +27,11 @@ func (h *Handler) refreshImportedDaybreak(ctx context.Context, id int64) {
 		log.Printf("[账号 %d] Daybreak 能力检查失败，保留已有结果: %v", id, err)
 	}
 }
+
+func (h *Handler) codexPricingModelIDs(ctx context.Context) []string {
+	models := proxy.SupportedModelIDs(ctx, h.db)
+	if h.store != nil {
+		models = append(models, proxy.DaybreakModelIDs(h.store.Accounts(), models)...)
+	}
+	return models
+}

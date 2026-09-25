@@ -274,6 +274,9 @@ var (
 
 func GetModelPricing(model string) *ModelPricing {
 	normalized := normalizeBillingModelName(model)
+	if alias := daybreakPricingAliasKey(model); alias != "" && alias != normalized {
+		return daybreakAliasPricing(normalized, alias)
+	}
 	canonical := normalized
 	if imageModel := GPTImage25BillingModel(normalized); imageModel != "" {
 		canonical = imageModel
@@ -304,7 +307,7 @@ func GetModelPricing(model string) *ModelPricing {
 	canonicalOv, hasCanonical := lookupModelPricingOverride(canonical)
 	var aliasOv ModelPricingOverride
 	hasAlias := false
-	aliasKey := PricingManagementModelKey(normalized)
+	aliasKey := PricingManagementModelKey(model)
 	if aliasKey != "" && aliasKey != canonical {
 		if ov, ok := lookupModelPricingOverride(aliasKey); ok {
 			if ov.Source == ModelPricingSourceCustom || !hasCanonical || canonicalOv.Source != ModelPricingSourceCustom {
@@ -493,7 +496,7 @@ func normalizeBillingModelName(model string) string {
 	} else if idx := strings.LastIndex(model, "/"); idx != -1 {
 		model = model[idx+1:]
 	}
-	// Daybreak 是访问程序，计费及价格覆盖始终复用基础模型。
+	// Daybreak 的规范计费模型仍是基础模型，专属价格覆盖由别名键处理。
 	model = strings.TrimSuffix(strings.TrimSuffix(model, "-daybreak-blue"), "-daybreak-red")
 	return strings.TrimLeft(model, "/")
 }
