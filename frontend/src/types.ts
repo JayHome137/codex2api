@@ -480,6 +480,9 @@ export interface AccountRow {
   usage_percent_5h?: number | null
   usage_percent_spark?: number | null
   rate_limit_reset_credits?: number | null
+  daybreak_supported?: boolean
+  daybreak_models?: Record<string, string[]>
+  daybreak_checked_at?: number
   applicable_reset_credits?: number | null
   credits_valid?: boolean
   credits_balance?: string | null
