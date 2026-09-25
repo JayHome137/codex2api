@@ -23,6 +23,11 @@ type CodexClientVersionsSyncResult struct {
 	VSCode         CodexAppBuildSyncResult `json:"vscode"`
 }
 
+type codexAppBuildSource struct {
+	Kind  string
+	Fetch func(context.Context) (string, error)
+}
+
 func codexPersistedBuild(settings *database.SystemSettings, kind string) string {
 	switch kind {
 	case "desktop-mac":
@@ -62,9 +67,9 @@ func codexStoreRuntimeBuild(kind, version string) {
 	})
 }
 
-func syncCodexAppBuild(ctx context.Context, db *database.DB, kind string, fetch func(context.Context) (string, error)) CodexAppBuildSyncResult {
-	result := CodexAppBuildSyncResult{EffectiveVersion: codexRuntimeBuild(kind)}
-	fetched, err := fetch(ctx)
+func syncCodexAppBuild(ctx context.Context, db *database.DB, source codexAppBuildSource) CodexAppBuildSyncResult {
+	result := CodexAppBuildSyncResult{EffectiveVersion: codexRuntimeBuild(source.Kind)}
+	fetched, err := source.Fetch(ctx)
 	if err != nil {
 		result.Error = err.Error()
 		return result
@@ -77,20 +82,20 @@ func syncCodexAppBuild(ctx context.Context, db *database.DB, kind string, fetch 
 	}
 	current := ""
 	if settings != nil {
-		current = strings.TrimSpace(codexPersistedBuild(settings, kind))
+		current = strings.TrimSpace(codexPersistedBuild(settings, source.Kind))
 	}
 	if !codexBuildIsNewer(fetched, current) {
 		if current != "" {
-			codexStoreRuntimeBuild(kind, current)
+			codexStoreRuntimeBuild(source.Kind, current)
 		}
 		result.EffectiveVersion = current
 		return result
 	}
-	if err := db.UpdateCodexSyncedAppBuild(ctx, kind, fetched); err != nil {
+	if err := db.UpdateCodexSyncedAppBuild(ctx, source.Kind, fetched); err != nil {
 		result.Error = err.Error()
 		return result
 	}
-	codexStoreRuntimeBuild(kind, fetched)
+	codexStoreRuntimeBuild(source.Kind, fetched)
 	result.Updated, result.EffectiveVersion = true, fetched
 	return result
 }
@@ -109,14 +114,14 @@ func SyncCodexClientVersions(ctx context.Context, db *database.DB, proxyURL stri
 	} else {
 		result.CLI.FetchedVersion, result.CLI.Updated = cli.FetchedVersion, cli.Updated
 	}
-	result.DesktopMac = syncCodexAppBuild(ctx, db, "desktop-mac", func(ctx context.Context) (string, error) {
+	result.DesktopMac = syncCodexAppBuild(ctx, db, codexAppBuildSource{Kind: "desktop-mac", Fetch: func(ctx context.Context) (string, error) {
 		return FetchCodexDesktopMacBuild(ctx, proxyURL)
-	})
-	result.VSCode = syncCodexAppBuild(ctx, db, "vscode", func(ctx context.Context) (string, error) {
+	}})
+	result.VSCode = syncCodexAppBuild(ctx, db, codexAppBuildSource{Kind: "vscode", Fetch: func(ctx context.Context) (string, error) {
 		return FetchCodexVSCodeBuild(ctx, proxyURL)
-	})
-	result.DesktopWindows = syncCodexAppBuild(ctx, db, "desktop-windows", func(ctx context.Context) (string, error) {
+	}})
+	result.DesktopWindows = syncCodexAppBuild(ctx, db, codexAppBuildSource{Kind: "desktop-windows", Fetch: func(ctx context.Context) (string, error) {
 		return FetchCodexDesktopWindowsBuild(ctx, proxyURL)
-	})
+	}})
 	return result, nil
 }

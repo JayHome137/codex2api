@@ -194,7 +194,7 @@ func codexASARPackageVersion(source io.Reader) (string, error) {
 }
 
 func codexWindowsPackageVersion(ctx context.Context, client *http.Client) (string, []int64, error) {
-	resp, err := codexBuildRequest(ctx, client, http.MethodGet, codexWindowsUpdateURL, nil)
+	resp, err := codexBuildRequest(ctx, client, codexBuildRequestSpec{Method: http.MethodGet, URL: codexWindowsUpdateURL})
 	if err != nil {
 		return "", nil, err
 	}

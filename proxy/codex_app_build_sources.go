@@ -23,6 +23,12 @@ type codexMarketplaceProperty struct {
 	Value string `json:"value"`
 }
 
+type codexBuildRequestSpec struct {
+	Method string
+	URL    string
+	Body   io.Reader
+}
+
 func codexBuildParts(version string, count int) ([]int64, bool) {
 	parts := strings.Split(strings.TrimSpace(version), ".")
 	if len(parts) != count {
@@ -63,14 +69,14 @@ func codexBuildHTTPClient(proxyURL string) *http.Client {
 	return &http.Client{Transport: newCodexStandardTransport(proxyURL), Timeout: 90 * time.Second}
 }
 
-func codexBuildRequest(ctx context.Context, client *http.Client, method, url string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
+func codexBuildRequest(ctx context.Context, client *http.Client, spec codexBuildRequestSpec) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, spec.Method, spec.URL, spec.Body)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "codex2api")
 	req.Header.Set("Accept-Encoding", "identity")
-	if method == http.MethodPost {
+	if spec.Method == http.MethodPost {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json;api-version=7.1-preview.1")
 	}
@@ -94,7 +100,7 @@ func codexReadSmallResponse(resp *http.Response, limit int64) ([]byte, error) {
 
 // FetchCodexDesktopMacBuild 读取官方 Sparkle appcast 中最新正式版的应用构建号。
 func FetchCodexDesktopMacBuild(ctx context.Context, proxyURL string) (string, error) {
-	resp, err := codexBuildRequest(ctx, codexBuildHTTPClient(proxyURL), http.MethodGet, codexMacAppcastURL, nil)
+	resp, err := codexBuildRequest(ctx, codexBuildHTTPClient(proxyURL), codexBuildRequestSpec{Method: http.MethodGet, URL: codexMacAppcastURL})
 	if err != nil {
 		return "", err
 	}
@@ -126,7 +132,7 @@ func FetchCodexDesktopMacBuild(ctx context.Context, proxyURL string) (string, er
 func FetchCodexVSCodeBuild(ctx context.Context, proxyURL string) (string, error) {
 	// 1=versions, 16=version properties；跳过文件元数据以减少响应体。
 	const query = `{"filters":[{"criteria":[{"filterType":7,"value":"openai.chatgpt"}]}],"flags":17}`
-	resp, err := codexBuildRequest(ctx, codexBuildHTTPClient(proxyURL), http.MethodPost, codexMarketplaceURL, strings.NewReader(query))
+	resp, err := codexBuildRequest(ctx, codexBuildHTTPClient(proxyURL), codexBuildRequestSpec{Method: http.MethodPost, URL: codexMarketplaceURL, Body: strings.NewReader(query)})
 	if err != nil {
 		return "", err
 	}
