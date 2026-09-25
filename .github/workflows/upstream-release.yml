@@ -1,4 +1,4 @@
-name: Publish Upstream Release
+name: Publish Custom Release
 
 on:
   workflow_run:
@@ -13,18 +13,18 @@ permissions:
   contents: write
 
 concurrency:
-  group: upstream-release-${{ github.event.workflow_run.head_sha }}
+  group: custom-release-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: true
 
 env:
   UPSTREAM_REPOSITORY: james-6-23/codex2api
-  UPSTREAM_SYNC_WORKFLOW: .github/workflows/upstream-sync.yml
+  TARGET_BRANCH: codex2api-custom
 
 jobs:
-  promote-validated-main:
+  promote-validated-custom:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main'
+      github.event.workflow_run.head_branch == 'codex2api-custom'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -32,13 +32,13 @@ jobs:
       release_tag: ${{ steps.promote.outputs.release_tag }}
       source_sha: ${{ steps.promote.outputs.source_sha }}
     steps:
-      - name: Checkout validated main commit
+      - name: Checkout validated custom commit
         uses: actions/checkout@v5
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
 
-      - name: Verify checks and promote the upstream tag
+      - name: Verify checks and promote the upstream version
         id: promote
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,36 +47,40 @@ jobs:
         run: |
           set -euo pipefail
 
-          upstream_tag=$(sed -n 's/^  UPSTREAM_TAG:[[:space:]]*//p' "$UPSTREAM_SYNC_WORKFLOW" | head -n 1)
-          if [[ ! "$upstream_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid upstream tag in $UPSTREAM_SYNC_WORKFLOW: $upstream_tag" >&2
-            exit 1
-          fi
-
-          echo "source_sha=$SOURCE_SHA"
-          echo "upstream_tag=$upstream_tag"
-          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
-          echo "release_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
-
-          # Both push checks must be successful for this exact main commit.
           runs_json=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SOURCE_SHA}&event=push&per_page=100")
-          ci_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "CI" and .head_branch == "main") | .conclusion] | last // ""' <<< "$runs_json")
-          security_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "Security Scan" and .head_branch == "main") | .conclusion] | last // ""' <<< "$runs_json")
-          echo "ci_conclusion=$ci_conclusion"
-          echo "security_conclusion=$security_conclusion"
+          ci_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "CI" and .head_branch == env.TARGET_BRANCH) | .conclusion] | last // ""' <<< "$runs_json")
+          security_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "Security Scan" and .head_branch == env.TARGET_BRANCH) | .conclusion] | last // ""' <<< "$runs_json")
           if [[ "$ci_conclusion" != "success" || "$security_conclusion" != "success" ]]; then
             echo "The matching CI and Security Scan runs are not both successful yet; no release will be promoted."
             exit 0
           fi
 
           git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
-          git fetch --no-tags upstream \
-            "refs/tags/${upstream_tag}:refs/tags/upstream-${upstream_tag}"
-          upstream_sha=$(git rev-parse "refs/tags/upstream-${upstream_tag}^{commit}")
-          if ! git merge-base --is-ancestor "$upstream_sha" "$SOURCE_SHA"; then
-            echo "Validated main does not contain ${upstream_tag} (${upstream_sha}); no release will be promoted."
+          git fetch --no-tags upstream main
+          upstream_main_sha=$(git rev-parse refs/remotes/upstream/main)
+          if ! git merge-base --is-ancestor "$upstream_main_sha" "$SOURCE_SHA"; then
+            echo "The validated custom commit does not contain the current upstream main; no release will be promoted."
             exit 0
           fi
+
+          upstream_tag=$(git ls-remote --tags --refs upstream 'v[0-9]*' \
+            | awk -F/ '{print $3}' \
+            | sort -V \
+            | tail -n 1)
+          if [[ ! "$upstream_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "No semver upstream tag is available; no release will be promoted."
+            exit 0
+          fi
+
+          git fetch --no-tags upstream "refs/tags/${upstream_tag}:refs/tags/upstream-${upstream_tag}"
+          upstream_tag_sha=$(git rev-parse "refs/tags/upstream-${upstream_tag}^{commit}")
+          if ! git merge-base --is-ancestor "$upstream_tag_sha" "$upstream_main_sha"; then
+            echo "The latest upstream tag is not reachable from upstream main; no release will be promoted."
+            exit 0
+          fi
+
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
 
           if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${upstream_tag}" >/dev/null 2>&1; then
             echo "Release ${upstream_tag} already exists; nothing to promote."
@@ -84,41 +88,28 @@ jobs:
           fi
 
           existing_tag_sha=$(git ls-remote origin "refs/tags/${upstream_tag}^{}" | awk 'NR == 1 { print $1 }')
-          if [[ -z "$existing_tag_sha" ]]; then
-            existing_tag_sha=$(git ls-remote origin "refs/tags/${upstream_tag}" | awk 'NR == 1 { print $1 }')
-          fi
           if [[ -n "$existing_tag_sha" && "$existing_tag_sha" != "$SOURCE_SHA" ]]; then
             if ! git merge-base --is-ancestor "$existing_tag_sha" "$SOURCE_SHA"; then
-              echo "Remote tag ${upstream_tag} already points to unrelated commit ${existing_tag_sha}, not ${SOURCE_SHA}." >&2
+              echo "Remote tag ${upstream_tag} points to unrelated commit ${existing_tag_sha}." >&2
               exit 1
             fi
-            echo "Remote tag ${upstream_tag} points to an earlier validated ancestor ${existing_tag_sha}."
+            echo "Remote tag ${upstream_tag} already points to an ancestor; no new tag is needed."
+            exit 0
           fi
 
-          if [[ -z "$existing_tag_sha" ]]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag -a "$upstream_tag" "$SOURCE_SHA" \
-              -m "Release ${upstream_tag} with upstream ${upstream_tag} and fork billing support"
-            git push origin "$upstream_tag"
-          else
-            echo "Remote tag ${upstream_tag} already points to this validated commit."
-          fi
-
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$upstream_tag" "$SOURCE_SHA" \
+            -m "Release ${upstream_tag} with upstream ${upstream_tag} and fork billing support"
+          git push origin "$upstream_tag"
           echo "should_release=true" >> "$GITHUB_OUTPUT"
-          {
-            echo "### Release promotion"
-            echo
-            echo "Validated main commit `${SOURCE_SHA}` is being published as `${upstream_tag}`."
-            echo "The release asset workflow will run as the next job after the tag check."
-          } >> "$GITHUB_STEP_SUMMARY"
 
   publish-release:
-    needs: promote-validated-main
-    if: needs.promote-validated-main.outputs.should_release == 'true'
+    needs: promote-validated-custom
+    if: needs.promote-validated-custom.outputs.should_release == 'true'
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml
     with:
-      release_tag: ${{ needs.promote-validated-main.outputs.release_tag }}
-      source_ref: ${{ needs.promote-validated-main.outputs.source_sha }}
+      release_tag: ${{ needs.promote-validated-custom.outputs.release_tag }}
+      source_ref: ${{ needs.promote-validated-custom.outputs.source_sha }}

@@ -14268,16 +14268,6 @@ function UsageWindowStat({
   );
 }
 
-function UpstreamRateStatus({ account }: { account: AccountRow }) {
-  if (!account.sub2_upstream_account) return null;
-  const multiplier = account.sub2_upstream_rate_multiplier;
-  return (
-    <div className="mt-1 text-[11px] font-medium text-amber-600 dark:text-amber-300">
-      上游倍率：{typeof multiplier === "number" && multiplier > 0 ? `×${multiplier.toFixed(4)}` : "未探查"}
-    </div>
-  );
-}
-
 // 今日统计列:网关侧口径,服务器时区当天 0 点起(参考 sub2api 的今日统计列)。
 // page-stats 对本页每个账号必回该字段,零值是真实的"今天没跑";
 // 字段缺失说明 stats 还没到(加载中/失败),显示占位而不是 0。
@@ -14539,7 +14529,6 @@ function UsageCell({
           ) : (
             <UsageWindowStat label={longWindowLabel} detail={account.usage_7d_detail} />
           )}
-          <UpstreamRateStatus account={account} />
         </div>
         {refreshButton}
       </div>
@@ -14565,7 +14554,6 @@ function UsageCell({
               apiAccount={account.openai_responses_api}
             />
           )}
-          <UpstreamRateStatus account={account} />
         </div>
         {refreshButton}
       </div>
@@ -14590,7 +14578,6 @@ function UsageCell({
               apiAccount={account.openai_responses_api}
             />
           )}
-          <UpstreamRateStatus account={account} />
         </div>
         {refreshButton}
       </div>

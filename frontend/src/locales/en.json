@@ -2590,7 +2590,7 @@
     "requestedTier": "Requested Tier",
     "actualTier": "Upstream-reported Tier",
     "billingTier": "Billing Tier",
-    "billingMultiplier": "Multiplier",
+    "billingMultiplier": "User billing multiplier",
     "originalCost": "Original",
     "userBilled": "User billed",
     "billingTierStandard": "Standard",

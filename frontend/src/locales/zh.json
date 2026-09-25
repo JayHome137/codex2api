@@ -2590,7 +2590,7 @@
     "requestedTier": "请求 Tier",
     "actualTier": "上游回传 Tier",
     "billingTier": "计费模式",
-    "billingMultiplier": "倍率",
+    "billingMultiplier": "用户计费倍率",
     "originalCost": "原始",
     "userBilled": "用户扣费",
     "billingTierStandard": "Standard",

@@ -83,3 +83,22 @@ func TestParseAnthropicOfficialPricingHTMLIncludesCacheWriteAndRead(t *testing.T
 		t.Fatalf("Fable 5 pricing = %+v", fable5)
 	}
 }
+
+func TestParseAnthropicOfficialPricingHTMLSupportsMultiLevelHeadersAndModelLinks(t *testing.T) {
+	body := []byte(`<table>
+<thead><tr><th>Model</th><th colspan="2">Base tokens</th><th colspan="3">Prompt caching</th></tr>
+<tr><th>Name</th><th>Input</th><th>Output</th><th>5m writes</th><th>1h writes</th><th>Hits and refreshes</th></tr></thead>
+<tbody><tr><td><a href="/docs/models/fable-5-1">Claude Fable 5.1</a><span>For demanding reasoning</span></td><td>$10 / MTok</td><td>$50 / MTok</td><td>$12.50 / MTok</td><td>$20 / MTok</td><td>$0.25 / MTok</td></tr></tbody>
+</table>`)
+	got, err := ParseAnthropicOfficialPricingHTML(body)
+	if err != nil {
+		t.Fatalf("ParseAnthropicOfficialPricingHTML: %v", err)
+	}
+	fable51, ok := got["claude-fable-5-1"]
+	if !ok {
+		t.Fatalf("linked model name should be normalized without description: %v", got)
+	}
+	if fable51.Input != 10 || fable51.Output != 50 || fable51.CacheWrite5m != 12.5 || fable51.CacheWrite1h != 20 || fable51.CachedInput != 0.25 {
+		t.Fatalf("Fable 5.1 pricing = %+v", fable51)
+	}
+}

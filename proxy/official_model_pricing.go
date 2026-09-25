@@ -458,14 +458,21 @@ func ParseAnthropicOfficialPricingHTML(body []byte) (map[string]database.ModelPr
 }
 
 func parseAnthropicPricingTable(table *html.Node, out map[string]database.ModelPricingOverride) {
-	var rows [][]string
+	type pricingCell struct {
+		text string
+		node *html.Node
+	}
+	var rows [][]pricingCell
 	var collect func(*html.Node)
 	collect = func(node *html.Node) {
 		if node != table && node.Type == html.ElementNode && node.Data == "tr" {
-			cells := make([]string, 0, 8)
+			cells := make([]pricingCell, 0, 8)
 			for child := node.FirstChild; child != nil; child = child.NextSibling {
 				if child.Type == html.ElementNode && (child.Data == "th" || child.Data == "td") {
-					cells = append(cells, strings.TrimSpace(htmlNodeText(child)))
+					cells = append(cells, pricingCell{
+						text: strings.TrimSpace(htmlNodeText(child)),
+						node: child,
+					})
 				}
 			}
 			if len(cells) > 0 {
@@ -481,11 +488,7 @@ func parseAnthropicPricingTable(table *html.Node, out map[string]database.ModelP
 	if len(rows) < 2 {
 		return
 	}
-	header := make([]string, len(rows[0]))
-	for i, cell := range rows[0] {
-		header[i] = strings.ToLower(strings.Join(strings.Fields(cell), " "))
-	}
-	find := func(needles ...string) int {
+	find := func(header []string, needles ...string) int {
 		for i, cell := range header {
 			matched := true
 			for _, needle := range needles {
@@ -500,44 +503,88 @@ func parseAnthropicPricingTable(table *html.Node, out map[string]database.ModelP
 		}
 		return -1
 	}
-	modelIdx := find("model")
-	inputIdx := find("input")
-	write5Idx := find("5m", "cache", "write")
-	write1Idx := find("1h", "cache", "write")
-	readIdx := find("cache", "hit")
-	if readIdx < 0 {
-		readIdx = find("cache", "refresh")
+	headerIdx := -1
+	var header []string
+	for i, row := range rows {
+		candidate := make([]string, len(row))
+		for j, cell := range row {
+			candidate[j] = strings.ToLower(strings.Join(strings.Fields(cell.text), " "))
+		}
+		modelIdx := find(candidate, "model")
+		if modelIdx < 0 {
+			modelIdx = find(candidate, "name")
+		}
+		if modelIdx >= 0 && find(candidate, "input") >= 0 && find(candidate, "output") >= 0 {
+			headerIdx = i
+			header = candidate
+			break
+		}
 	}
-	if readIdx < 0 {
-		readIdx = find("cache", "read")
-	}
-	outputIdx := find("output")
-	if modelIdx < 0 || inputIdx < 0 || readIdx < 0 || outputIdx < 0 {
+	if headerIdx < 0 {
 		return
 	}
-	for _, row := range rows[1:] {
-		if modelIdx >= len(row) || inputIdx >= len(row) || outputIdx >= len(row) || readIdx >= len(row) {
+	modelIdx := find(header, "model")
+	if modelIdx < 0 {
+		modelIdx = find(header, "name")
+	}
+	inputIdx := find(header, "input")
+	write5Idx := find(header, "5m", "write")
+	write1Idx := find(header, "1h", "write")
+	readIdx := find(header, "cache", "hit")
+	if readIdx < 0 {
+		readIdx = find(header, "cache", "refresh")
+	}
+	if readIdx < 0 {
+		readIdx = find(header, "hit")
+	}
+	if readIdx < 0 {
+		readIdx = find(header, "cache", "read")
+	}
+	outputIdx := find(header, "output")
+	for _, row := range rows[headerIdx+1:] {
+		if modelIdx >= len(row) || inputIdx >= len(row) || outputIdx >= len(row) {
 			continue
 		}
-		model := normalizeAnthropicPricingModel(row[modelIdx])
+		modelText := row[modelIdx].text
+		if anchorText := firstHTMLAnchorText(row[modelIdx].node); anchorText != "" {
+			modelText = anchorText
+		}
+		model := normalizeAnthropicPricingModel(modelText)
 		if model == "" || !isClaudeBillingModel(model) {
 			continue
 		}
 		override := database.ModelPricingOverride{
-			Input:       parseOfficialPrice(row[inputIdx]),
-			CachedInput: parseOfficialPrice(row[readIdx]),
-			Output:      parseOfficialPrice(row[outputIdx]),
+			Input:  parseOfficialPrice(row[inputIdx].text),
+			Output: parseOfficialPrice(row[outputIdx].text),
+		}
+		if readIdx >= 0 && readIdx < len(row) {
+			override.CachedInput = parseOfficialPrice(row[readIdx].text)
 		}
 		if write5Idx >= 0 && write5Idx < len(row) {
-			override.CacheWrite5m = parseOfficialPrice(row[write5Idx])
+			override.CacheWrite5m = parseOfficialPrice(row[write5Idx].text)
 		}
 		if write1Idx >= 0 && write1Idx < len(row) {
-			override.CacheWrite1h = parseOfficialPrice(row[write1Idx])
+			override.CacheWrite1h = parseOfficialPrice(row[write1Idx].text)
 		}
 		if override.Input > 0 && override.Output > 0 {
 			out[model] = override
 		}
 	}
+}
+
+func firstHTMLAnchorText(node *html.Node) string {
+	if node == nil {
+		return ""
+	}
+	if node.Type == html.ElementNode && node.Data == "a" {
+		return strings.TrimSpace(htmlNodeText(node))
+	}
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		if text := firstHTMLAnchorText(child); text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func htmlNodeText(node *html.Node) string {
