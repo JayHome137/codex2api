@@ -4470,7 +4470,9 @@ export default function Settings() {
                                     ? t('settings.modelSourceOfficial')
                                     : model.source === 'reasoning_effort'
                                       ? t('settings.modelSourceReasoning')
-                                      : t('settings.modelSourceBuiltin')}
+                                      : model.source === 'daybreak'
+                                        ? 'Daybreak'
+                                        : t('settings.modelSourceBuiltin')}
                                 </Badge>
                                 {model.pro_only ? (
                                   <Badge variant="outline" className="text-[11px]">{t('settings.modelProOnly')}</Badge>

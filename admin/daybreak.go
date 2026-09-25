@@ -35,3 +35,23 @@ func (h *Handler) codexPricingModelIDs(ctx context.Context) []string {
 	}
 	return models
 }
+
+func (h *Handler) addDaybreakCatalogModels(catalog *proxy.ModelCatalog) {
+	if h.store == nil || catalog == nil {
+		return
+	}
+	aliases := proxy.DaybreakModelIDs(h.store.Accounts(), catalog.Models)
+	known := make(map[string]bool, len(catalog.Items))
+	for _, item := range catalog.Items {
+		known[item.ID] = true
+	}
+	for _, alias := range aliases {
+		if known[alias] {
+			continue
+		}
+		catalog.Models = append(catalog.Models, alias)
+		catalog.Items = append(catalog.Items, proxy.ModelInfo{
+			ID: alias, Enabled: true, Category: "codex", Source: "daybreak",
+		})
+	}
+}

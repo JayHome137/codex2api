@@ -12651,7 +12651,7 @@ func (h *Handler) MigrateAccounts(c *gin.Context) {
 // ListModels 返回支持的模型列表（供前端设置页使用）
 func (h *Handler) ListModels(c *gin.Context) {
 	catalog, _ := proxy.ListModelCatalog(c.Request.Context(), h.db)
-	catalog.Models = append(catalog.Models, proxy.DaybreakModelIDs(h.store.Accounts(), catalog.Models)...)
+	h.addDaybreakCatalogModels(&catalog)
 	catalog.GrokModels = h.grokChannelModels()
 	catalog.AntigravityModels = h.antigravityChannelModels()
 	// The request-facing catalog must not advertise models contributed only by
