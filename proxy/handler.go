@@ -1562,6 +1562,7 @@ func populateInternalUsageMetaFromContext(c *gin.Context, input *database.UsageL
 }
 
 func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInput) {
+	applyDaybreakUsageModel(c, input)
 	populateAPIKeyMetaFromContext(c, input)
 	populateInternalUsageMetaFromContext(c, input)
 	populateClientIPFromRequest(c, input)
