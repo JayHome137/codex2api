@@ -28,7 +28,7 @@ import { formatBeijingTime } from '../utils/time'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { ResponsiveTooltip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import {
   Table,
   TableBody,
@@ -446,8 +446,11 @@ function UsageCostCell({ log }: { log: UsageLog }) {
   }
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
+    <ResponsiveTooltip
+      side="right"
+      sideOffset={8}
+      className="w-96 max-w-none whitespace-nowrap rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-xs text-slate-50 shadow-xl"
+      trigger={(
         <button
           type="button"
           className="group inline-flex cursor-help items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -457,8 +460,8 @@ function UsageCostCell({ log }: { log: UsageLog }) {
           </span>
           <Info className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-blue-500" />
         </button>
-      </TooltipTrigger>
-      <TooltipContent side="right" sideOffset={8} className="w-96 max-w-none whitespace-nowrap rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-xs text-slate-50 shadow-xl">
+      )}
+    >
         <div className="space-y-1.5">
           <div className="mb-1 text-xs font-semibold text-slate-300">{t('usage.costDetails')}</div>
           {log.input_cost > 0 && <CostTooltipRow label={t('usage.inputCost')} value={formatUSD(log.input_cost)} />}
@@ -503,8 +506,7 @@ function UsageCostCell({ log }: { log: UsageLog }) {
             />
           )}
         </div>
-      </TooltipContent>
-    </Tooltip>
+    </ResponsiveTooltip>
   )
 }
 
