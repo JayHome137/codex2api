@@ -144,7 +144,8 @@ type RuntimeSettings struct {
 	// CodexCLIVersionSyncIntervalHours 定时同步间隔（小时，默认 12，范围 1-720）。
 	CodexCLIVersionSyncIntervalHours int
 	// AutoResetCreditsEnabled 控制 Plus/Pro 主动重置次数的临期自动消费（默认 false）。
-	AutoResetCreditsEnabled bool
+	AutoResetCreditsEnabled             bool
+	AutoResetCreditsOnExhaustionEnabled bool
 	// AutoResetCreditsBeforeExpiryMin 是进入自动消费窗口的提前分钟数（默认 60）。
 	AutoResetCreditsBeforeExpiryMin int
 	// AutoActivate5hWindowEnabled 控制 5h 窗口重置后是否发送一次最小真实 /responses 启动下一轮窗口（默认 false，issue #581）。
@@ -389,6 +390,7 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.CodexCLIVersionSyncEnabled = settings.CodexCLIVersionSyncEnabled
 		next.CodexCLIVersionSyncIntervalHours = settings.CodexCLIVersionSyncIntervalHours
 		next.AutoResetCreditsEnabled = settings.AutoResetCreditsEnabled
+		next.AutoResetCreditsOnExhaustionEnabled = settings.AutoResetCreditsOnExhaustionEnabled
 		next.AutoResetCreditsBeforeExpiryMin = settings.AutoResetCreditsBeforeExpiryMin
 		next.AutoActivate5hWindowEnabled = settings.AutoActivate5hWindowEnabled
 		next.UTLSShutdownTimeoutMin = settings.UTLSShutdownTimeoutMinutes

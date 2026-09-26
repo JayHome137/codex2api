@@ -252,11 +252,15 @@ type Account struct {
 	GrokLivePlanObservedAt time.Time
 	GrokLivePlanExpiresAt  time.Time
 	GrokLivePlanKnown      bool
-	GrokAccessAllowed      *bool
-	GrokAccessExpiresAt    time.Time
-	GrokBillingExhausted   bool
-	GrokBillingExpiresAt   time.Time
-	GrokFactsGeneration    int64
+	// GrokDisplayPlan is settings.subscription_tier_display. Like the display
+	// column it is a hint only; it never passes an authorization gate.
+	GrokDisplayPlan          string
+	GrokDisplayPlanExpiresAt time.Time
+	GrokAccessAllowed        *bool
+	GrokAccessExpiresAt      time.Time
+	GrokBillingExhausted     bool
+	GrokBillingExpiresAt     time.Time
+	GrokFactsGeneration      int64
 	// grokRouting 是按账号、凭据 generation 隔离的模型目录与协议能力快照。
 	// 目录本身由控制面同步并持久化；执行路径只读取这份不可变副本，不现场访问上游。
 	grokRouting     *GrokRoutingState
@@ -7550,6 +7554,18 @@ func (s *Store) WaitForSessionAvailable(ctx context.Context, key string, timeout
 	return s.WaitForSessionAvailableWithFilter(ctx, key, timeout, apiKeyID, exclude, nil)
 }
 
+// HasDispatchCandidate reports whether any locally known account could serve
+// the request once a concurrency slot frees up. Saturation is ignored, so a
+// false result means a queue wait with this exclude set can only succeed if an
+// account is added or recovers; retry loops use it to recognize that their own
+// request-local exclusions are what is blocking selection.
+func (s *Store) HasDispatchCandidate(key string, apiKeyID int64, exclude map[int64]bool, filter AccountFilter, preserveBinding bool, policy DispatchPolicy) bool {
+	if preserveBinding {
+		return s.hasContinuationCandidateWithDispatch(key, apiKeyID, exclude, filter, policy)
+	}
+	return s.hasDispatchCandidateWithDispatch(apiKeyID, exclude, filter, policy)
+}
+
 func (s *Store) hasDispatchCandidateWithFilter(apiKeyID int64, exclude map[int64]bool, filter AccountFilter) bool {
 	return s.hasDispatchCandidateWithDispatch(apiKeyID, exclude, filter, DispatchPolicyStandard)
 }
@@ -7809,10 +7825,7 @@ func (s *Store) waitForSessionAvailableWithFilter(ctx context.Context, key strin
 		return nil, "", SessionAffinityGuard{}, ctx.Err()
 	}
 	hasCandidate := func() bool {
-		if preserveBinding {
-			return s.hasContinuationCandidateWithDispatch(key, apiKeyID, exclude, filter, policy)
-		}
-		return s.hasDispatchCandidateWithDispatch(apiKeyID, exclude, filter, policy)
+		return s.HasDispatchCandidate(key, apiKeyID, exclude, filter, preserveBinding, policy)
 	}
 	// Indexed/shadow also wait on an empty snapshot: another replica may add
 	// an account and notify this process through the durable outbox.
