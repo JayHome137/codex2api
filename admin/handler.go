@@ -341,6 +341,7 @@ func (h *Handler) probeImportedAccountUsage(ctx context.Context, accountID int64
 	if account.GetAccessToken() == "" && !account.IsCodexAgentIdentity() {
 		return
 	}
+	defer h.refreshImportedDaybreak(ctx, accountID)
 	probeFn := h.usageProbeFunc()
 	if probeFn == nil {
 		return
@@ -681,7 +682,7 @@ func (h *Handler) scheduleImportedAccountWarmup(acc *auth.Account, id int64, sou
 		h.triggerImportedAccountUsageProbe(id, source)
 		return
 	}
-	if h.store != nil && !h.store.GetLazyMode() {
+	if h.store != nil {
 		h.runImportProbeTask(func(ctx context.Context) {
 			h.refreshImportedAccountAndProbe(ctx, id, source+"_refresh")
 		})
@@ -696,6 +697,12 @@ func (h *Handler) commitImportedRuntimeAccounts(accounts []*auth.Account, source
 	}
 	h.store.AddAccounts(accounts)
 	if skipRefresh {
+		for _, account := range accounts {
+			if account != nil && account.GetAccessToken() != "" {
+				id := account.ID()
+				h.runImportProbeTask(func(ctx context.Context) { h.refreshImportedDaybreak(ctx, id) })
+			}
+		}
 		return
 	}
 	for _, acc := range accounts {
@@ -1329,6 +1336,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/models/sync", h.SyncModels)
 	api.POST("/models/refresh-all", h.RefreshAllModels)
 	api.POST("/codex-cli-version/sync", h.SyncCodexCLIVersion)
+	api.POST("/codex-client-versions/sync", h.SyncCodexClientVersions)
 	api.GET("/model-pricing", h.ListModelPricing)
 	api.PUT("/model-pricing", h.UpdateModelPricing)
 	api.POST("/model-pricing/sync", h.SyncModelPricing)
@@ -1661,6 +1669,7 @@ type accountResponse struct {
 	GrokAPI                       bool                        `json:"grok_api,omitempty"`
 	AntigravityAPI                bool                        `json:"antigravity_api,omitempty"`
 	ClaudeAPI                     bool                        `json:"claude_api,omitempty"`
+	ExcelBPSEnabled               bool                        `json:"openai_excel_bps,omitempty"`
 	ClaudeAuthKind                string                      `json:"claude_auth_kind,omitempty"`
 	ClaudeBaseURL                 string                      `json:"claude_base_url,omitempty"`
 	AntigravityAuthKind           string                      `json:"antigravity_auth_kind,omitempty"`
@@ -1728,6 +1737,9 @@ type accountResponse struct {
 	UsagePercent5h                *float64                    `json:"usage_percent_5h"`
 	UsagePercentSpark             *float64                    `json:"usage_percent_spark"`
 	RateLimitResetCredits         *int                        `json:"rate_limit_reset_credits"`
+	DaybreakSupported             bool                        `json:"daybreak_supported"`
+	DaybreakModels                map[string][]string         `json:"daybreak_models,omitempty"`
+	DaybreakCheckedAt             int64                       `json:"daybreak_checked_at,omitempty"`
 	ApplicableResetCredits        *int                        `json:"applicable_reset_credits"`
 	CreditsValid                  bool                        `json:"credits_valid"`
 	CreditsBalance                *string                     `json:"credits_balance"`
@@ -2076,6 +2088,7 @@ type accountLiteResponse struct {
 	OpenAIResponsesAPI bool   `json:"openai_responses_api"`
 	GrokAPI            bool   `json:"grok_api"`
 	ClaudeAPI          bool   `json:"claude_api"`
+	ExcelBPSEnabled    bool   `json:"openai_excel_bps"`
 	AgentIdentity      bool   `json:"agent_identity"`
 	GrokAuthKind       string `json:"grok_auth_kind,omitempty"`
 }
@@ -2132,6 +2145,7 @@ func (h *Handler) listAccountsLite(c *gin.Context, ctx context.Context) {
 			OpenAIResponsesAPI: isOpenAIResponsesAccount,
 			GrokAPI:            isGrokAccount,
 			ClaudeAPI:          isClaudeAccount,
+			ExcelBPSEnabled:    row.GetCredentialBool(auth.ExcelBPSCredentialKey),
 			AgentIdentity:      isAgentIdentityCredentialRow(row),
 			GrokAuthKind:       grokAuthKind,
 		})
@@ -2162,6 +2176,7 @@ type updateAccountSchedulerReq struct {
 	ClaudeVersionPolicy     json.RawMessage `json:"claude_version_policy"`
 	ClaudeClientVersion     json.RawMessage `json:"claude_client_version"`
 	Timezone                json.RawMessage `json:"timezone"`
+	ExcelBPSEnabled         json.RawMessage `json:"openai_excel_bps"`
 }
 
 type accountSchedulerUpdate struct {
@@ -2186,6 +2201,7 @@ type accountSchedulerUpdate struct {
 	ClaudeVersionPolicy     database.OptionalString
 	ClaudeClientVersion     database.OptionalString
 	Timezone                database.OptionalString
+	ExcelBPSEnabled         database.OptionalBool
 	CredentialUpdates       map[string]interface{}
 }
 
@@ -2292,6 +2308,10 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
+	excelBPSEnabled, err := parseOptionalBoolField(req.ExcelBPSEnabled, "openai_excel_bps")
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
 	if codexFingerprintMode.Set {
 		codexFingerprintMode.Value = auth.NormalizeCodexFingerprintMode(codexFingerprintMode.Value)
 	}
@@ -2323,6 +2343,9 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	}
 	if timezoneField.Set {
 		credentialUpdates[auth.AccountTimezoneCredentialKey] = strings.TrimSpace(timezoneField.Value)
+	}
+	if excelBPSEnabled.Set {
+		credentialUpdates[auth.ExcelBPSCredentialKey] = excelBPSEnabled.Value
 	}
 	if autoPause5hThreshold.Set {
 		credentialUpdates["auto_pause_5h_threshold"] = autoPause5hThreshold.Value
@@ -2383,6 +2406,7 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		ClaudeVersionPolicy:     claudeVersionPolicy,
 		ClaudeClientVersion:     claudeClientVersion,
 		Timezone:                timezoneField,
+		ExcelBPSEnabled:         excelBPSEnabled,
 		CredentialUpdates:       credentialUpdates,
 	}, nil
 }
@@ -2463,7 +2487,8 @@ func (u accountSchedulerUpdate) hasChanges() bool {
 		u.ClaudeClientPlatform.Set ||
 		u.ClaudeVersionPolicy.Set ||
 		u.ClaudeClientVersion.Set ||
-		u.Timezone.Set
+		u.Timezone.Set ||
+		u.ExcelBPSEnabled.Set
 }
 
 func optionalBoolFromPtr(value *bool) database.OptionalBool {
@@ -2784,6 +2809,9 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 	}
 	if update.Timezone.Set {
 		h.store.ApplyAccountTimezone(id, update.Timezone.Value)
+	}
+	if value, ok := update.CredentialUpdates[auth.ExcelBPSCredentialKey].(bool); ok {
+		h.store.ApplyAccountExcelBPSEnabled(id, value)
 	}
 }
 
@@ -4678,12 +4706,17 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 	defer cancel()
+	daybreakSnapshot := account.BeginDaybreakObservation()
 	manifest, err := proxy.FetchCodexModelsManifest(ctx, account, h.store.ResolveProxyForAccount(account), "", "")
 	if err != nil {
 		writeError(c, http.StatusBadGateway, fmt.Sprintf("拉取上游模型清单失败: %s", err.Error()))
 		return
 	}
 	proxy.RecordResponsesLiteSupportFromManifest(manifest.Body)
+	if err := (proxy.DaybreakObservation{Account: account, Snapshot: daybreakSnapshot, Body: manifest.Body}).Save(ctx, h.db); err != nil {
+		writeError(c, http.StatusBadGateway, "保存 Daybreak 能力失败: "+err.Error())
+		return
+	}
 	models := auth.NormalizeAccountModels(proxy.ExtractManifestModelSlugs(manifest.Body))
 	if len(models) == 0 {
 		writeError(c, http.StatusBadGateway, "上游模型清单未返回可用模型")
@@ -9185,6 +9218,9 @@ type settingsResponse struct {
 	CodexCLIVersionSyncEnabled          bool   `json:"codex_cli_version_sync_enabled"`
 	CodexCLIVersionSyncIntervalHours    int    `json:"codex_cli_version_sync_interval_hours"`
 	CodexSyncedCLIVersion               string `json:"codex_synced_cli_version"`
+	CodexSyncedDesktopMacBuild          string `json:"codex_synced_desktop_mac_build"`
+	CodexSyncedDesktopWindowsBuild      string `json:"codex_synced_desktop_windows_build"`
+	CodexSyncedVSCodeBuild              string `json:"codex_synced_vscode_build"`
 	// CodexEffectiveCLIVersion 是当前实际用于出站 UA 的版本(内置常量与同步值取大),
 	// 供设置页"设为同步版本"按钮使用——同步值可能过期或为空,内置值才是下限。
 	CodexEffectiveCLIVersion       string `json:"codex_effective_cli_version"`
@@ -10201,6 +10237,9 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		CodexCLIVersionSyncEnabled:          h.store.CodexCLIVersionSyncEnabled(),
 		CodexCLIVersionSyncIntervalHours:    h.store.CodexCLIVersionSyncIntervalHours(),
 		CodexSyncedCLIVersion:               proxy.CurrentRuntimeSettings().CodexSyncedCLIVersion,
+		CodexSyncedDesktopMacBuild:          proxy.CurrentRuntimeSettings().CodexSyncedDesktopMacBuild,
+		CodexSyncedDesktopWindowsBuild:      proxy.CurrentRuntimeSettings().CodexSyncedDesktopWindowsBuild,
+		CodexSyncedVSCodeBuild:              proxy.CurrentRuntimeSettings().CodexSyncedVSCodeBuild,
 		CodexEffectiveCLIVersion:            proxy.LatestCodexCLIVersionForHeaders(),
 		SchedulerMode:                       h.store.GetSchedulerMode(),
 		AffinityMode:                        h.store.GetAffinityMode(),
@@ -11441,6 +11480,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		// CodexSyncedCLIVersion 由后台同步任务独立维护；管理员保存其他设置时
 		// 必须保留临界区内读到的最新值，避免反向回滚同步结果。
 		effectiveRuntimeCfg.CodexSyncedCLIVersion = current.CodexSyncedCLIVersion
+		effectiveRuntimeCfg.CodexSyncedDesktopMacBuild = current.CodexSyncedDesktopMacBuild
+		effectiveRuntimeCfg.CodexSyncedDesktopWindowsBuild = current.CodexSyncedDesktopWindowsBuild
+		effectiveRuntimeCfg.CodexSyncedVSCodeBuild = current.CodexSyncedVSCodeBuild
 		return effectiveRuntimeCfg
 	})
 
@@ -11718,6 +11760,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexCLIVersionSyncEnabled:          h.store.CodexCLIVersionSyncEnabled(),
 		CodexCLIVersionSyncIntervalHours:    h.store.CodexCLIVersionSyncIntervalHours(),
 		CodexSyncedCLIVersion:               proxy.CurrentRuntimeSettings().CodexSyncedCLIVersion,
+		CodexSyncedDesktopMacBuild:          proxy.CurrentRuntimeSettings().CodexSyncedDesktopMacBuild,
+		CodexSyncedDesktopWindowsBuild:      proxy.CurrentRuntimeSettings().CodexSyncedDesktopWindowsBuild,
+		CodexSyncedVSCodeBuild:              proxy.CurrentRuntimeSettings().CodexSyncedVSCodeBuild,
 		SchedulerMode:                       h.store.GetSchedulerMode(),
 		AffinityMode:                        h.store.GetAffinityMode(),
 		SessionAffinitySpread:               h.store.GetSessionAffinitySpread(),
@@ -11885,6 +11930,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		if autoResetCreditsChanged {
 			runtimeCfg = proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
 				runtimeCfg.CodexSyncedCLIVersion = current.CodexSyncedCLIVersion
+				runtimeCfg.CodexSyncedDesktopMacBuild = current.CodexSyncedDesktopMacBuild
+				runtimeCfg.CodexSyncedDesktopWindowsBuild = current.CodexSyncedDesktopWindowsBuild
+				runtimeCfg.CodexSyncedVSCodeBuild = current.CodexSyncedVSCodeBuild
 				return runtimeCfg
 			})
 			h.triggerAutoResetCreditsScan()
@@ -11892,6 +11940,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		if autoActivate5hChanged {
 			runtimeCfg = proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
 				runtimeCfg.CodexSyncedCLIVersion = current.CodexSyncedCLIVersion
+				runtimeCfg.CodexSyncedDesktopMacBuild = current.CodexSyncedDesktopMacBuild
+				runtimeCfg.CodexSyncedDesktopWindowsBuild = current.CodexSyncedDesktopWindowsBuild
+				runtimeCfg.CodexSyncedVSCodeBuild = current.CodexSyncedVSCodeBuild
 				return runtimeCfg
 			})
 			h.triggerAutoActivate5hScan()
@@ -12043,6 +12094,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexCLIVersionSyncEnabled:          h.store.CodexCLIVersionSyncEnabled(),
 		CodexCLIVersionSyncIntervalHours:    h.store.CodexCLIVersionSyncIntervalHours(),
 		CodexSyncedCLIVersion:               proxy.CurrentRuntimeSettings().CodexSyncedCLIVersion,
+		CodexSyncedDesktopMacBuild:          proxy.CurrentRuntimeSettings().CodexSyncedDesktopMacBuild,
+		CodexSyncedDesktopWindowsBuild:      proxy.CurrentRuntimeSettings().CodexSyncedDesktopWindowsBuild,
+		CodexSyncedVSCodeBuild:              proxy.CurrentRuntimeSettings().CodexSyncedVSCodeBuild,
 		CodexEffectiveCLIVersion:            proxy.LatestCodexCLIVersionForHeaders(),
 		SchedulerMode:                       h.store.GetSchedulerMode(),
 		AffinityMode:                        h.store.GetAffinityMode(),
@@ -12606,6 +12660,7 @@ func (h *Handler) MigrateAccounts(c *gin.Context) {
 // ListModels 返回支持的模型列表（供前端设置页使用）
 func (h *Handler) ListModels(c *gin.Context) {
 	catalog, _ := proxy.ListModelCatalog(c.Request.Context(), h.db)
+	h.addDaybreakCatalogModels(&catalog)
 	catalog.GrokModels = h.grokChannelModels()
 	catalog.AntigravityModels = h.antigravityChannelModels()
 	// The request-facing catalog must not advertise models contributed only by
@@ -12699,6 +12754,22 @@ func (h *Handler) SyncCodexCLIVersion(c *gin.Context) {
 		proxyURL = h.store.GetProxyURL()
 	}
 	result, err := proxy.SyncCodexCLIVersion(ctx, h.db, proxyURL)
+	if err != nil {
+		writeError(c, http.StatusBadGateway, err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// SyncCodexClientVersions 同步 CLI、Desktop 和 VSCode，并返回各来源的独立结果。
+func (h *Handler) SyncCodexClientVersions(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Minute)
+	defer cancel()
+	proxyURL := ""
+	if h.store != nil {
+		proxyURL = h.store.GetProxyURL()
+	}
+	result, err := proxy.SyncCodexClientVersions(ctx, h.db, proxyURL)
 	if err != nil {
 		writeError(c, http.StatusBadGateway, err.Error())
 		return

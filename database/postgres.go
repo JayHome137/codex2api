@@ -1509,6 +1509,9 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_continue_thinking_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_continue_max_rounds INT DEFAULT 8;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_synced_cli_version TEXT DEFAULT '';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_synced_desktop_mac_build TEXT DEFAULT '';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_synced_desktop_windows_build TEXT DEFAULT '';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_synced_vscode_build TEXT DEFAULT '';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_cli_version_sync_enabled BOOLEAN DEFAULT TRUE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_cli_version_sync_interval_hours INT DEFAULT 12;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS claude_synced_cli_version TEXT DEFAULT '';
@@ -1621,6 +1624,10 @@ func (db *DB) migrate(ctx context.Context) error {
 			CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_source_id ON prompt_filter_logs(source, id DESC);
 			CREATE INDEX IF NOT EXISTS idx_prompt_filter_logs_reviewed_id ON prompt_filter_logs(reviewed, id DESC);
 			DROP TABLE IF EXISTS prompt_filter_secrets;
+			CREATE TABLE IF NOT EXISTS daybreak_snapshots (
+ account_id BIGINT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+ identity TEXT NOT NULL, observed_at BIGINT NOT NULL, checked_at BIGINT NOT NULL, models_json TEXT NOT NULL
+ );
 			CREATE TABLE IF NOT EXISTS model_capability_snapshots (
  account_id BIGINT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
  credential_generation BIGINT NOT NULL,
@@ -2465,7 +2472,10 @@ type SystemSettings struct {
 	TransportRetryPolicy        string // 传输错误重试策略: rotate（换号，旧行为）/ sticky（同号延迟重试）
 	// CodexSyncedCLIVersion 是从 openai/codex releases 同步到的最新 Codex CLI 版本缓存，
 	// 用于抬升出站 UA / manifest 的模拟版本（绝不低于内置常量），空表示尚未同步。
-	CodexSyncedCLIVersion string
+	CodexSyncedCLIVersion          string
+	CodexSyncedDesktopMacBuild     string
+	CodexSyncedDesktopWindowsBuild string
+	CodexSyncedVSCodeBuild         string
 	// CodexCLIVersionSyncEnabled 控制是否后台定时自动同步 Codex CLI 版本（默认 true）。
 	CodexCLIVersionSyncEnabled bool
 	// CodexCLIVersionSyncIntervalHours 是定时同步间隔（小时，默认 12，范围 1-720）。
@@ -2800,6 +2810,15 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := db.conn.QueryRowContext(ctx, `SELECT COALESCE(codex_synced_desktop_mac_build, ''),
+		COALESCE(codex_synced_desktop_windows_build, ''), COALESCE(codex_synced_vscode_build, '')
+		FROM system_settings WHERE id = 1`).Scan(&s.CodexSyncedDesktopMacBuild,
+		&s.CodexSyncedDesktopWindowsBuild, &s.CodexSyncedVSCodeBuild); err != nil {
+		return nil, err
 	}
 	s.SiteName = NormalizeSiteName(s.SiteName)
 	s.SiteLogo = strings.TrimSpace(s.SiteLogo)
@@ -3245,6 +3264,23 @@ func (db *DB) UpdateCodexSyncedCLIVersion(ctx context.Context, version string) e
 		ON CONFLICT (id) DO UPDATE SET
 			codex_synced_cli_version = EXCLUDED.codex_synced_cli_version
 	`, strings.TrimSpace(version))
+	return err
+}
+
+// UpdateCodexSyncedAppBuild 只更新一个已知客户端的构建号，不回写整个设置快照。
+func (db *DB) UpdateCodexSyncedAppBuild(ctx context.Context, kind, version string) error {
+	columns := map[string]string{
+		"desktop-mac":     "codex_synced_desktop_mac_build",
+		"desktop-windows": "codex_synced_desktop_windows_build",
+		"vscode":          "codex_synced_vscode_build",
+	}
+	column, ok := columns[kind]
+	if !ok {
+		return fmt.Errorf("unknown Codex app build kind %q", kind)
+	}
+	query := fmt.Sprintf(`INSERT INTO system_settings (id, %s) VALUES (1, $1)
+		ON CONFLICT (id) DO UPDATE SET %s = EXCLUDED.%s`, column, column, column)
+	_, err := db.conn.ExecContext(ctx, query, strings.TrimSpace(version))
 	return err
 }
 
@@ -7317,6 +7353,9 @@ func (db *DB) UpdateAccountSchedulerMetadata(ctx context.Context, id int64, scor
 			if _, err := tx.ExecContext(ctx, "UPDATE accounts SET "+strings.Join(sets, ", ")+" WHERE id = "+ph, args...); err != nil {
 				return err
 			}
+			if err := invalidateDaybreakIdentity(ctx, tx, id); err != nil {
+				return err
+			}
 		}
 		if groupIDs.Set {
 			ph := "$1"
@@ -7520,6 +7559,9 @@ func (db *DB) batchUpdateAccountCredentials(ctx context.Context, tx *sql.Tx, cur
 		if _, err := tx.ExecContext(ctx, updateQuery, credJSON, id); err != nil {
 			return err
 		}
+		if err := invalidateDaybreakIdentity(ctx, tx, id); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -7709,6 +7751,9 @@ func (db *DB) updateCredentialsReadMerge(ctx context.Context, id int64, credenti
 	if _, err := tx.ExecContext(ctx, updateQuery, credJSON, id); err != nil {
 		return err
 	}
+	if err := invalidateDaybreakIdentity(ctx, tx, id); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -7717,7 +7762,9 @@ func (db *DB) updateCredentialsSQLite(ctx context.Context, id int64, credentials
 		if len(credentials) == 0 {
 			return nil
 		}
-		if grokIdentityUpdateKeysPresent(credentials) {
+		_, hasEmail := credentials["email"]
+		_, hasHeaders := credentials["custom_headers"]
+		if grokIdentityUpdateKeysPresent(credentials) || hasEmail || hasHeaders {
 			return db.updateCredentialsReadMergeSQLiteUnlocked(ctx, id, credentials)
 		}
 
@@ -7793,6 +7840,9 @@ func (db *DB) updateCredentialsReadMergeSQLiteUnlocked(ctx context.Context, id i
 		generationUpdate = ", credential_generation = credential_generation + 1"
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET credentials = $1`+generationUpdate+`, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, credJSON, id); err != nil {
+		return err
+	}
+	if err := invalidateDaybreakIdentity(ctx, tx, id); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -7933,6 +7983,9 @@ func (db *DB) UpdateOAuthAccountCredentials(ctx context.Context, id int64, crede
 	}
 	res, err := tx.ExecContext(ctx, updateQuery, credJSON, proxyURL, id)
 	if err != nil {
+		return err
+	}
+	if err := invalidateDaybreakIdentity(ctx, tx, id); err != nil {
 		return err
 	}
 	affected, err := res.RowsAffected()

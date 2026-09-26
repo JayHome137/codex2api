@@ -156,6 +156,7 @@ func NormalizeTestContent(content string) string {
 
 // Account 运行时账号状态
 type Account struct {
+	daybreak                  database.DaybreakSnapshot
 	codexLiteSupport          map[string]bool
 	codexCapabilityGeneration int64
 	codexCapabilityObservedAt int64
@@ -206,6 +207,8 @@ type Account struct {
 	// CodexFingerprintMode 见 codex_fingerprint_mode.go：Codex 官方出站请求的
 	// 设备指纹收敛档位（off / device / session / full），默认 off。
 	CodexFingerprintMode string
+	// ExcelBPSEnabled is the durable opt-in for the Basispoints Responses adapter.
+	ExcelBPSEnabled bool
 	// Timezone 是账号绑定的 IANA 时区（credentials.timezone）。Codex 官方出站路径据此
 	// 改写请求体 environment_context 里的时区与日期（见 proxy/codex_environment_context.go）；
 	// 空 = 不绑定、透传下游值。Claude 账号沿用同一凭据键做身份标签。
@@ -5585,6 +5588,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		CodexPassthroughMode:         codexPassthroughMode,
 		ResponsesUpstreamTransport:   responsesUpstreamTransport,
 		CodexFingerprintMode:         codexFingerprintMode,
+		ExcelBPSEnabled:              row.GetCredentialBool(ExcelBPSCredentialKey),
 		Timezone:                     accountTimezone,
 		ClaudeFingerprintMode:        claudeFingerprintMode,
 		ClaudeAuthKind:               claudeAuthKind,
@@ -5868,6 +5872,11 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	account.mu.Lock()
 	account.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	account.mu.Unlock()
+	if s.db != nil {
+		if snapshot, err := s.db.LoadDaybreakSnapshot(ctx, row.ID); err == nil {
+			account.ApplyDaybreakSnapshot(snapshot)
+		}
+	}
 	return account
 }
 

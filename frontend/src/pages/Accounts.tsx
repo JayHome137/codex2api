@@ -42,6 +42,7 @@ import { CompactStat } from "../components/CompactStat";
 import Pagination from "../components/Pagination";
 import StateShell from "../components/StateShell";
 import StatusBadge from "../components/StatusBadge";
+import DaybreakBadge from "../components/DaybreakBadge";
 import { useDataLoader, type LoadOptions } from "../hooks/useDataLoader";
 import {
   useConfirmDialog,
@@ -1273,13 +1274,16 @@ const AccountTableRow = memo(function AccountTableRow({
                                       {account.effective_workspace_id}
                                     </span>
                                   )}
-                                  {showEmailDomainTags &&
-                                    getAccountEmailDomain(account) && (
-                                    <EmailDomainBadge
-                                      domain={getAccountEmailDomain(account)}
-                                      t={t}
-                                    />
-                                  )}
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    {showEmailDomainTags &&
+                                      getAccountEmailDomain(account) && (
+                                        <EmailDomainBadge
+                                          domain={getAccountEmailDomain(account)}
+                                          t={t}
+                                        />
+                                      )}
+                                    <DaybreakBadge models={account.daybreak_models} />
+                                  </div>
                                   {(account.at_only ||
                                     account.openai_responses_api ||
                                     account.grok_api ||
@@ -5128,6 +5132,7 @@ export default function Accounts() {
     try {
       const result = await api.syncAccountModelsUpstream(modelsAccount.id);
       const fetched = result.models ?? [];
+      void reloadSilently();
       setModelsDraft((current) => mergeModelLists(current, fetched));
       showToast(
         t("accounts.supportedModelsSyncDone", { count: fetched.length }),
@@ -5232,6 +5237,7 @@ export default function Accounts() {
       );
     } finally {
       setModelsProbing(false);
+      void reloadSilently();
     }
   };
 
@@ -13701,6 +13707,7 @@ function AccountMobileCard({
                   {resetCredits}
                 </button>
               )}
+              <DaybreakBadge models={account.daybreak_models} />
               {isFullCard && creditBalance !== null && (
                 <button
                   type="button"

@@ -391,6 +391,9 @@ export interface AccountRow {
   usage_percent_5h?: number | null
   usage_percent_spark?: number | null
   rate_limit_reset_credits?: number | null
+  daybreak_supported?: boolean
+  daybreak_models?: Record<string, string[]>
+  daybreak_checked_at?: number
   applicable_reset_credits?: number | null
   credits_valid?: boolean
   credits_balance?: string | null
@@ -2184,6 +2187,9 @@ export interface SystemSettings {
   codex_cli_version_sync_enabled: boolean
   codex_cli_version_sync_interval_hours: number
   codex_synced_cli_version?: string
+  codex_synced_desktop_mac_build?: string
+  codex_synced_desktop_windows_build?: string
+  codex_synced_vscode_build?: string
   codex_effective_cli_version?: string
   codex_user_agent_config: string
   usage_log_mode: 'full' | 'errors' | 'off' | string

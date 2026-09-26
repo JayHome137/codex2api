@@ -135,7 +135,10 @@ type RuntimeSettings struct {
 	RequestIsolationMode string
 	// CodexSyncedCLIVersion 是从 openai/codex releases 同步到的最新 Codex CLI 版本；
 	// 用于抬升出站 UA / manifest 的模拟版本，绝不低于内置常量，空表示未同步。
-	CodexSyncedCLIVersion string
+	CodexSyncedCLIVersion          string
+	CodexSyncedDesktopMacBuild     string
+	CodexSyncedDesktopWindowsBuild string
+	CodexSyncedVSCodeBuild         string
 	// CodexCLIVersionSyncEnabled 控制后台定时同步 Codex CLI 版本（默认 true）。
 	CodexCLIVersionSyncEnabled bool
 	// CodexCLIVersionSyncIntervalHours 定时同步间隔（小时，默认 12，范围 1-720）。
@@ -380,6 +383,9 @@ func ApplyRuntimeSettingsFromSystem(settings *database.SystemSettings) RuntimeSe
 		next.CodexContinueThinking = settings.CodexContinueThinkingEnabled
 		next.CodexContinueMaxRounds = settings.CodexContinueMaxRounds
 		next.CodexSyncedCLIVersion = settings.CodexSyncedCLIVersion
+		next.CodexSyncedDesktopMacBuild = settings.CodexSyncedDesktopMacBuild
+		next.CodexSyncedDesktopWindowsBuild = settings.CodexSyncedDesktopWindowsBuild
+		next.CodexSyncedVSCodeBuild = settings.CodexSyncedVSCodeBuild
 		next.CodexCLIVersionSyncEnabled = settings.CodexCLIVersionSyncEnabled
 		next.CodexCLIVersionSyncIntervalHours = settings.CodexCLIVersionSyncIntervalHours
 		next.AutoResetCreditsEnabled = settings.AutoResetCreditsEnabled
