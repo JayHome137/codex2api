@@ -20,7 +20,6 @@ type daybreakContextKey struct{}
 type daybreakGuard struct {
 	Request daybreakRequest
 	Limits  database.APIKeyLimits
-	DB      *database.DB
 }
 
 type daybreakRequest struct {
@@ -134,7 +133,7 @@ func (h *Handler) checkDaybreakRequest(c *gin.Context, model string) (string, in
 	if err != nil {
 		return model, http.StatusBadRequest, err.Error()
 	}
-	guard := daybreakGuard{Request: request, DB: h.db}
+	guard := daybreakGuard{Request: request}
 	if row := apiKeyRowFromContext(c); row != nil {
 		guard.Limits = row.Limits
 	}
