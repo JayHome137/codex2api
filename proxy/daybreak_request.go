@@ -29,7 +29,7 @@ type daybreakRequest struct {
 	Program   string
 }
 
-// 使用统计按“请求模型 → Daybreak 模型”展示，并用右侧模型计算费用。
+// model 保留下游请求名，effective_model 记录基础模型，Daybreak 程序单独记录。
 func applyDaybreakUsageModel(c *gin.Context, input *database.UsageLogInput) {
 	if c == nil || input == nil {
 		return
@@ -39,11 +39,11 @@ func applyDaybreakUsageModel(c *gin.Context, input *database.UsageLogInput) {
 	if request.Program == "" {
 		return
 	}
-	requestedBase, _ := auth.ParseDaybreakAlias(input.Model)
-	if input.Model == "" || strings.EqualFold(requestedBase, request.Model) {
-		input.Model = request.Model
+	if input.Model == "" {
+		input.Model = request.Requested
 	}
-	input.EffectiveModel = auth.DaybreakAlias(request.Model, request.Program)
+	input.EffectiveModel = request.Model
+	input.DaybreakProgram = request.Program
 }
 
 // 仅缓存路由字段，不能延长图片/base64 等大请求体的生命周期。
