@@ -156,6 +156,7 @@ func NormalizeTestContent(content string) string {
 
 // Account 运行时账号状态
 type Account struct {
+	daybreak                  database.DaybreakSnapshot
 	codexLiteSupport          map[string]bool
 	codexCapabilityGeneration int64
 	codexCapabilityObservedAt int64
@@ -5872,6 +5873,11 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	account.mu.Lock()
 	account.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
 	account.mu.Unlock()
+	if s.db != nil {
+		if snapshot, err := s.db.LoadDaybreakSnapshot(ctx, row.ID); err == nil {
+			account.ApplyDaybreakSnapshot(snapshot)
+		}
+	}
 	return account
 }
 

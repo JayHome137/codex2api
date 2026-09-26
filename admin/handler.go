@@ -346,6 +346,7 @@ func (h *Handler) probeImportedAccountUsage(ctx context.Context, accountID int64
 	if account.GetAccessToken() == "" && !account.IsCodexAgentIdentity() {
 		return
 	}
+	defer h.refreshImportedDaybreak(ctx, accountID)
 	probeFn := h.usageProbeFunc()
 	if probeFn == nil {
 		return
@@ -686,7 +687,7 @@ func (h *Handler) scheduleImportedAccountWarmup(acc *auth.Account, id int64, sou
 		h.triggerImportedAccountUsageProbe(id, source)
 		return
 	}
-	if h.store != nil && !h.store.GetLazyMode() {
+	if h.store != nil {
 		h.runImportProbeTask(func(ctx context.Context) {
 			h.refreshImportedAccountAndProbe(ctx, id, source+"_refresh")
 		})
@@ -701,6 +702,12 @@ func (h *Handler) commitImportedRuntimeAccounts(accounts []*auth.Account, source
 	}
 	h.store.AddAccounts(accounts)
 	if skipRefresh {
+		for _, account := range accounts {
+			if account != nil && account.GetAccessToken() != "" {
+				id := account.ID()
+				h.runImportProbeTask(func(ctx context.Context) { h.refreshImportedDaybreak(ctx, id) })
+			}
+		}
 		return
 	}
 	for _, acc := range accounts {
@@ -1742,6 +1749,9 @@ type accountResponse struct {
 	UsagePercent5h                *float64                    `json:"usage_percent_5h"`
 	UsagePercentSpark             *float64                    `json:"usage_percent_spark"`
 	RateLimitResetCredits         *int                        `json:"rate_limit_reset_credits"`
+	DaybreakSupported             bool                        `json:"daybreak_supported"`
+	DaybreakModels                map[string][]string         `json:"daybreak_models,omitempty"`
+	DaybreakCheckedAt             int64                       `json:"daybreak_checked_at,omitempty"`
 	ApplicableResetCredits        *int                        `json:"applicable_reset_credits"`
 	CreditsValid                  bool                        `json:"credits_valid"`
 	CreditsBalance                *string                     `json:"credits_balance"`
@@ -4692,12 +4702,17 @@ func (h *Handler) SyncAccountUpstreamModels(c *gin.Context) {
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 	defer cancel()
+	daybreakSnapshot := account.BeginDaybreakObservation()
 	manifest, err := proxy.FetchCodexModelsManifest(ctx, account, h.store.ResolveProxyForAccount(account), "", "")
 	if err != nil {
 		writeError(c, http.StatusBadGateway, fmt.Sprintf("拉取上游模型清单失败: %s", err.Error()))
 		return
 	}
 	proxy.RecordResponsesLiteSupportFromManifest(manifest.Body)
+	if err := (proxy.DaybreakObservation{Account: account, Snapshot: daybreakSnapshot, Body: manifest.Body}).Save(ctx, h.db); err != nil {
+		writeError(c, http.StatusBadGateway, "保存 Daybreak 能力失败: "+err.Error())
+		return
+	}
 	models := auth.NormalizeAccountModels(proxy.ExtractManifestModelSlugs(manifest.Body))
 	if len(models) == 0 {
 		writeError(c, http.StatusBadGateway, "上游模型清单未返回可用模型")
@@ -12636,6 +12651,7 @@ func (h *Handler) MigrateAccounts(c *gin.Context) {
 // ListModels 返回支持的模型列表（供前端设置页使用）
 func (h *Handler) ListModels(c *gin.Context) {
 	catalog, _ := proxy.ListModelCatalog(c.Request.Context(), h.db)
+	h.addDaybreakCatalogModels(&catalog)
 	catalog.GrokModels = h.grokChannelModels()
 	catalog.AntigravityModels = h.antigravityChannelModels()
 	// The request-facing catalog must not advertise models contributed only by
