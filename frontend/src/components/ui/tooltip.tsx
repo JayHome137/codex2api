@@ -28,6 +28,48 @@ function TooltipTrigger({
   return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />
 }
 
+type ResponsiveTooltipProps = {
+  trigger: React.ReactElement
+  children: React.ReactNode
+  side?: React.ComponentProps<typeof TooltipPrimitive.Content>["side"]
+  sideOffset?: number
+  className?: string
+}
+
+// Tooltips are hover-oriented on desktop. Touch pointers need an explicit
+// click toggle because Radix intentionally skips touch hover events.
+function ResponsiveTooltip({ trigger, children, side, sideOffset, className }: ResponsiveTooltipProps) {
+  const [open, setOpen] = React.useState(false)
+  const touchTriggerRef = React.useRef(false)
+
+  return (
+    <Tooltip open={open} onOpenChange={setOpen}>
+      <TooltipTrigger
+        asChild
+        onPointerDown={(event) => {
+          if (event.pointerType !== 'touch') return
+          event.preventDefault()
+          touchTriggerRef.current = true
+          setOpen((current) => !current)
+        }}
+        onPointerLeave={(event) => {
+          if (event.pointerType === 'touch') event.preventDefault()
+        }}
+        onClick={(event) => {
+          if (!touchTriggerRef.current) return
+          event.preventDefault()
+          touchTriggerRef.current = false
+        }}
+      >
+        {trigger}
+      </TooltipTrigger>
+      <TooltipContent side={side} sideOffset={sideOffset} className={className}>
+        {children}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 function TooltipContent({
   className,
   arrowClassName,
@@ -55,4 +97,4 @@ function TooltipContent({
   )
 }
 
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider }
+export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider, ResponsiveTooltip }

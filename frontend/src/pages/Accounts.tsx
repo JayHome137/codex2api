@@ -42,6 +42,7 @@ import { CompactStat } from "../components/CompactStat";
 import Pagination from "../components/Pagination";
 import StateShell from "../components/StateShell";
 import StatusBadge from "../components/StatusBadge";
+import DaybreakBadge from "../components/DaybreakBadge";
 import { useDataLoader, type LoadOptions } from "../hooks/useDataLoader";
 import {
   useConfirmDialog,
@@ -199,6 +200,7 @@ import {
   ArrowUpRight,
   Settings2,
   ListChecks,
+  RadioTower,
 } from "lucide-react";
 import {
   CLAUDE_TIMEZONE_CUSTOM,
@@ -226,6 +228,7 @@ import AccountQuotaDistributionChart from "../components/AccountQuotaDistributio
 import AccountRateLimitRecoveryChart from "../components/AccountRateLimitRecoveryChart";
 import AccountGroupMultiSelect from "../components/AccountGroupMultiSelect";
 import AccountQuickConfigSheet from "../components/AccountQuickConfigSheet";
+import ChannelMonitorConfigDialog from "../components/ChannelMonitorConfigDialog";
 import { useImportGroupIds } from "../hooks/useImportGroupIds";
 import AccountGroupFilterSelect, {
   EMPTY_ACCOUNT_GROUP_FILTER,
@@ -1072,6 +1075,7 @@ interface AccountRowActions {
   openDetail: (account: AccountRow) => void;
   openSchedulerEditor: (account: AccountRow) => void;
   openQuickConfig: (account: AccountRow) => void;
+  openChannelMonitor: (account: AccountRow) => void;
   openQuickGroupEditor: (account: AccountRow) => void;
   openQuickProxyEditor: (account: AccountRow) => void;
   openUsage: (account: AccountRow) => void;
@@ -1273,13 +1277,16 @@ const AccountTableRow = memo(function AccountTableRow({
                                       {account.effective_workspace_id}
                                     </span>
                                   )}
-                                  {showEmailDomainTags &&
-                                    getAccountEmailDomain(account) && (
-                                    <EmailDomainBadge
-                                      domain={getAccountEmailDomain(account)}
-                                      t={t}
-                                    />
-                                  )}
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    {showEmailDomainTags &&
+                                      getAccountEmailDomain(account) && (
+                                        <EmailDomainBadge
+                                          domain={getAccountEmailDomain(account)}
+                                          t={t}
+                                        />
+                                      )}
+                                    <DaybreakBadge models={account.daybreak_models} />
+                                  </div>
                                   {(account.at_only ||
                                     account.openai_responses_api ||
                                     account.grok_api ||
@@ -1508,7 +1515,10 @@ const AccountTableRow = memo(function AccountTableRow({
                             )}
                             {visibleColumns.billed && (
                               <TableCell className="text-[13px] text-muted-foreground whitespace-nowrap">
-                                <BilledCell account={account} onOpenOfficial={actions.openOfficialUsage} />
+                                <BilledCell
+                                  account={account}
+                                  onOpenOfficial={actions.openOfficialUsage}
+                                />
                               </TableCell>
                             )}
                             {visibleColumns.importTime && (
@@ -1598,6 +1608,9 @@ const AccountTableRow = memo(function AccountTableRow({
                                     includeTest={false}
                                     includeDelete={false}
                                     onTest={() => actions.openTesting(account)}
+                                    onChannelMonitor={() =>
+                                      actions.openChannelMonitor(account)
+                                    }
                                     onRefresh={() => actions.refresh(account)}
                                     onGenerateAuthJson={() =>
                                       actions.generateAuthJson(account)
@@ -1682,6 +1695,7 @@ const AccountCardItem = memo(function AccountCardItem({
       onEditProxy={() => actions.openQuickProxyEditor(account)}
       onUsage={() => actions.openUsage(account)}
       onOpenOfficialUsage={() => actions.openOfficialUsage(account)}
+      onChannelMonitor={() => actions.openChannelMonitor(account)}
       onTest={() => actions.openTesting(account)}
       onRefresh={() => actions.refresh(account)}
       onGenerateAuthJson={() => actions.generateAuthJson(account)}
@@ -1861,6 +1875,7 @@ export default function Accounts() {
   const [cleaningError, setCleaningError] = useState(false);
   const [testingAccount, setTestingAccount] = useState<AccountRow | null>(null);
   const [quickConfigAccount, setQuickConfigAccount] = useState<AccountRow | null>(null);
+  const [channelMonitorAccount, setChannelMonitorAccount] = useState<AccountRow | null>(null);
   const [usageAccount, setUsageAccount] = useState<AccountRow | null>(null);
   // 用量弹窗打开时停在哪个 tab。列表里点「官方结算」成本直接落到官方统计,
   // 其余入口保持默认的概览。
@@ -5149,6 +5164,7 @@ export default function Accounts() {
     try {
       const result = await api.syncAccountModelsUpstream(modelsAccount.id);
       const fetched = result.models ?? [];
+      void reloadSilently();
       setModelsDraft((current) => mergeModelLists(current, fetched));
       showToast(
         t("accounts.supportedModelsSyncDone", { count: fetched.length }),
@@ -5253,6 +5269,7 @@ export default function Accounts() {
       );
     } finally {
       setModelsProbing(false);
+      void reloadSilently();
     }
   };
 
@@ -6000,6 +6017,7 @@ export default function Accounts() {
     openDetail: openAccountDetail,
     openSchedulerEditor,
     openQuickConfig: (account) => setQuickConfigAccount(account),
+    openChannelMonitor: (account) => setChannelMonitorAccount(account),
     openQuickGroupEditor,
     openQuickProxyEditor: (account) => setQuickProxyAccount(account),
     openUsage: (account) => {
@@ -6027,6 +6045,7 @@ export default function Accounts() {
       openDetail: (a) => rowActionsImplRef.current?.openDetail(a),
       openSchedulerEditor: (a) => rowActionsImplRef.current?.openSchedulerEditor(a),
       openQuickConfig: (a) => rowActionsImplRef.current?.openQuickConfig(a),
+      openChannelMonitor: (a) => rowActionsImplRef.current?.openChannelMonitor(a),
       openQuickGroupEditor: (a) => rowActionsImplRef.current?.openQuickGroupEditor(a),
       openQuickProxyEditor: (a) => rowActionsImplRef.current?.openQuickProxyEditor(a),
       openUsage: (a) => rowActionsImplRef.current?.openUsage(a),
@@ -9041,6 +9060,11 @@ export default function Accounts() {
               if (!detailAccount) return;
               setQuickConfigAccount(detailAccount);
             }}
+            onChannelMonitor={
+              detailAccount?.openai_responses_api && !detailAccount.grok_api
+                ? () => setChannelMonitorAccount(detailAccount)
+                : undefined
+            }
             onEdit={() => {
               if (!detailAccount) return;
               openSchedulerEditor(detailAccount);
@@ -9101,6 +9125,12 @@ export default function Accounts() {
             show={Boolean(quickConfigAccount)}
             onClose={() => setQuickConfigAccount(null)}
             onSaved={() => void reloadSilently()}
+          />
+
+          <ChannelMonitorConfigDialog
+            account={channelMonitorAccount}
+            show={Boolean(channelMonitorAccount)}
+            onClose={() => setChannelMonitorAccount(null)}
           />
 
           <Modal
@@ -13287,6 +13317,7 @@ function AccountRowActionsMenu({
   includeTest = true,
   includeDelete = true,
   onTest,
+  onChannelMonitor,
   onRefresh,
   onGenerateAuthJson,
   onToggleEnabled,
@@ -13303,6 +13334,7 @@ function AccountRowActionsMenu({
   includeTest?: boolean;
   includeDelete?: boolean;
   onTest: () => void;
+  onChannelMonitor?: () => void;
   onRefresh: () => void;
   onGenerateAuthJson: () => void;
   onToggleEnabled: () => void;
@@ -13330,6 +13362,16 @@ function AccountRowActionsMenu({
             label: t("accounts.testConnection"),
             icon: <Zap className="size-3.5" />,
             onSelect: onTest,
+          },
+        ]
+      : []),
+    ...(account.openai_responses_api && !account.grok_api && onChannelMonitor
+      ? [
+          {
+            key: "channel-monitor",
+            label: "渠道监控",
+            icon: <RadioTower className="size-3.5" />,
+            onSelect: onChannelMonitor,
           },
         ]
       : []),
@@ -13626,6 +13668,7 @@ function AccountMobileCard({
   onDelete,
   onUsageRefreshed,
   onOpenOfficialUsage,
+  onChannelMonitor,
 }: {
   account: AccountRow;
   sequence: number;
@@ -13659,6 +13702,7 @@ function AccountMobileCard({
   onUsageRefreshed?: () => void;
   // 成本列的官方胶囊点击后跳到用量弹窗的官方统计 tab。
   onOpenOfficialUsage?: () => void;
+  onChannelMonitor?: () => void;
 }) {
   const displayName = account.openai_responses_api
     ? formatAccountName(account)
@@ -13807,6 +13851,7 @@ function AccountMobileCard({
                   {resetCredits}
                 </button>
               )}
+              <DaybreakBadge models={account.daybreak_models} />
               {isFullCard && creditBalance !== null && (
                 <button
                   type="button"
@@ -14030,6 +14075,7 @@ function AccountMobileCard({
           refreshing={refreshing}
           authJsonExporting={authJsonExporting}
           onTest={onTest}
+          onChannelMonitor={onChannelMonitor}
           onRefresh={onRefresh}
           onGenerateAuthJson={onGenerateAuthJson}
           onToggleEnabled={onToggleEnabled}
