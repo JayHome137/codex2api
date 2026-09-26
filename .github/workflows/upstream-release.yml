@@ -64,13 +64,13 @@ jobs:
           done
 
           git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
-          upstream_tag=$(git ls-remote --tags --refs upstream 'v[0-9]*' \
-            | awk -F/ '{print $3}' \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-            | sort -V \
-            | tail -n 1)
+          upstream_tag=$(sed -n '1p' .upstream-release 2>/dev/null || true)
           if [[ ! "$upstream_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "No semver upstream tag is available; no release will be promoted."
+            echo "The custom branch does not declare a valid upstream release marker; no release will be promoted."
+            exit 0
+          fi
+          if ! git ls-remote --exit-code --refs upstream "refs/tags/${upstream_tag}" >/dev/null; then
+            echo "The declared upstream release ${upstream_tag} is not available upstream; no release will be promoted."
             exit 0
           fi
 
