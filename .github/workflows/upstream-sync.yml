@@ -102,11 +102,14 @@ jobs:
             done < <(git diff --name-only --diff-filter=U)
           fi
 
+          printf '%s\n' "$latest_tag" > .upstream-release
           git add -A
-          if [[ "$merge_had_conflicts" == true ]]; then
-            git commit -m "chore: sync upstream release ${latest_tag} preserving custom billing"
-          else
-            git commit -m "chore: sync upstream release ${latest_tag}"
+          if ! git diff --cached --quiet; then
+            if [[ "$merge_had_conflicts" == true ]]; then
+              git commit -m "chore: sync upstream release ${latest_tag} preserving custom billing"
+            else
+              git commit -m "chore: sync upstream release ${latest_tag}"
+            fi
           fi
 
           custom_sha=$(git rev-parse HEAD)

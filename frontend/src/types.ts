@@ -3542,6 +3542,7 @@ export interface UsageLog {
   endpoint: string
   model: string
   effective_model: string
+  daybreak_program?: string
   /** 上游响应自报的模型名（未自报/历史行为空）。 */
   upstream_response_model?: string
   /** 三态：undefined/null=上游未自报无法比对；true/false=自报与实发是否一致。 */
@@ -4006,6 +4007,7 @@ export interface PublicAPIKeyUsageLog {
   endpoint: string
   model: string
   effective_model: string
+  daybreak_program?: string
   status_code: number
   duration_ms: number
   first_token_ms: number
