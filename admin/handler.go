@@ -1350,6 +1350,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/models/sync", h.SyncModels)
 	api.POST("/models/refresh-all", h.RefreshAllModels)
 	api.POST("/codex-cli-version/sync", h.SyncCodexCLIVersion)
+	api.POST("/codex-client-versions/sync", h.SyncCodexClientVersions)
 	api.GET("/model-pricing", h.ListModelPricing)
 	api.PUT("/model-pricing", h.UpdateModelPricing)
 	api.POST("/model-pricing/sync", h.SyncModelPricing)
@@ -9215,6 +9216,9 @@ type settingsResponse struct {
 	CodexCLIVersionSyncEnabled          bool   `json:"codex_cli_version_sync_enabled"`
 	CodexCLIVersionSyncIntervalHours    int    `json:"codex_cli_version_sync_interval_hours"`
 	CodexSyncedCLIVersion               string `json:"codex_synced_cli_version"`
+	CodexSyncedDesktopMacBuild          string `json:"codex_synced_desktop_mac_build"`
+	CodexSyncedDesktopWindowsBuild      string `json:"codex_synced_desktop_windows_build"`
+	CodexSyncedVSCodeBuild              string `json:"codex_synced_vscode_build"`
 	// CodexEffectiveCLIVersion 是当前实际用于出站 UA 的版本(内置常量与同步值取大),
 	// 供设置页"设为同步版本"按钮使用——同步值可能过期或为空,内置值才是下限。
 	CodexEffectiveCLIVersion       string `json:"codex_effective_cli_version"`
@@ -10235,6 +10239,9 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		CodexCLIVersionSyncEnabled:          h.store.CodexCLIVersionSyncEnabled(),
 		CodexCLIVersionSyncIntervalHours:    h.store.CodexCLIVersionSyncIntervalHours(),
 		CodexSyncedCLIVersion:               proxy.CurrentRuntimeSettings().CodexSyncedCLIVersion,
+		CodexSyncedDesktopMacBuild:          proxy.CurrentRuntimeSettings().CodexSyncedDesktopMacBuild,
+		CodexSyncedDesktopWindowsBuild:      proxy.CurrentRuntimeSettings().CodexSyncedDesktopWindowsBuild,
+		CodexSyncedVSCodeBuild:              proxy.CurrentRuntimeSettings().CodexSyncedVSCodeBuild,
 		CodexEffectiveCLIVersion:            proxy.LatestCodexCLIVersionForHeaders(),
 		SchedulerMode:                       h.store.GetSchedulerMode(),
 		AffinityMode:                        h.store.GetAffinityMode(),
@@ -11484,6 +11491,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		// CodexSyncedCLIVersion 由后台同步任务独立维护；管理员保存其他设置时
 		// 必须保留临界区内读到的最新值，避免反向回滚同步结果。
 		effectiveRuntimeCfg.CodexSyncedCLIVersion = current.CodexSyncedCLIVersion
+		effectiveRuntimeCfg.CodexSyncedDesktopMacBuild = current.CodexSyncedDesktopMacBuild
+		effectiveRuntimeCfg.CodexSyncedDesktopWindowsBuild = current.CodexSyncedDesktopWindowsBuild
+		effectiveRuntimeCfg.CodexSyncedVSCodeBuild = current.CodexSyncedVSCodeBuild
 		return effectiveRuntimeCfg
 	})
 
@@ -11762,6 +11772,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexCLIVersionSyncEnabled:          h.store.CodexCLIVersionSyncEnabled(),
 		CodexCLIVersionSyncIntervalHours:    h.store.CodexCLIVersionSyncIntervalHours(),
 		CodexSyncedCLIVersion:               proxy.CurrentRuntimeSettings().CodexSyncedCLIVersion,
+		CodexSyncedDesktopMacBuild:          proxy.CurrentRuntimeSettings().CodexSyncedDesktopMacBuild,
+		CodexSyncedDesktopWindowsBuild:      proxy.CurrentRuntimeSettings().CodexSyncedDesktopWindowsBuild,
+		CodexSyncedVSCodeBuild:              proxy.CurrentRuntimeSettings().CodexSyncedVSCodeBuild,
 		SchedulerMode:                       h.store.GetSchedulerMode(),
 		AffinityMode:                        h.store.GetAffinityMode(),
 		SessionAffinitySpread:               h.store.GetSessionAffinitySpread(),
@@ -11929,6 +11942,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		if autoResetCreditsChanged {
 			runtimeCfg = proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
 				runtimeCfg.CodexSyncedCLIVersion = current.CodexSyncedCLIVersion
+				runtimeCfg.CodexSyncedDesktopMacBuild = current.CodexSyncedDesktopMacBuild
+				runtimeCfg.CodexSyncedDesktopWindowsBuild = current.CodexSyncedDesktopWindowsBuild
+				runtimeCfg.CodexSyncedVSCodeBuild = current.CodexSyncedVSCodeBuild
 				return runtimeCfg
 			})
 			h.triggerAutoResetCreditsScan()
@@ -11936,6 +11952,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		if autoActivate5hChanged {
 			runtimeCfg = proxy.UpdateRuntimeSettings(func(current proxy.RuntimeSettings) proxy.RuntimeSettings {
 				runtimeCfg.CodexSyncedCLIVersion = current.CodexSyncedCLIVersion
+				runtimeCfg.CodexSyncedDesktopMacBuild = current.CodexSyncedDesktopMacBuild
+				runtimeCfg.CodexSyncedDesktopWindowsBuild = current.CodexSyncedDesktopWindowsBuild
+				runtimeCfg.CodexSyncedVSCodeBuild = current.CodexSyncedVSCodeBuild
 				return runtimeCfg
 			})
 			h.triggerAutoActivate5hScan()
@@ -12088,6 +12107,9 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexCLIVersionSyncEnabled:          h.store.CodexCLIVersionSyncEnabled(),
 		CodexCLIVersionSyncIntervalHours:    h.store.CodexCLIVersionSyncIntervalHours(),
 		CodexSyncedCLIVersion:               proxy.CurrentRuntimeSettings().CodexSyncedCLIVersion,
+		CodexSyncedDesktopMacBuild:          proxy.CurrentRuntimeSettings().CodexSyncedDesktopMacBuild,
+		CodexSyncedDesktopWindowsBuild:      proxy.CurrentRuntimeSettings().CodexSyncedDesktopWindowsBuild,
+		CodexSyncedVSCodeBuild:              proxy.CurrentRuntimeSettings().CodexSyncedVSCodeBuild,
 		CodexEffectiveCLIVersion:            proxy.LatestCodexCLIVersionForHeaders(),
 		SchedulerMode:                       h.store.GetSchedulerMode(),
 		AffinityMode:                        h.store.GetAffinityMode(),
@@ -12745,6 +12767,22 @@ func (h *Handler) SyncCodexCLIVersion(c *gin.Context) {
 		proxyURL = h.store.GetProxyURL()
 	}
 	result, err := proxy.SyncCodexCLIVersion(ctx, h.db, proxyURL)
+	if err != nil {
+		writeError(c, http.StatusBadGateway, err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// SyncCodexClientVersions 同步 CLI、Desktop 和 VSCode，并返回各来源的独立结果。
+func (h *Handler) SyncCodexClientVersions(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Minute)
+	defer cancel()
+	proxyURL := ""
+	if h.store != nil {
+		proxyURL = h.store.GetProxyURL()
+	}
+	result, err := proxy.SyncCodexClientVersions(ctx, h.db, proxyURL)
 	if err != nil {
 		writeError(c, http.StatusBadGateway, err.Error())
 		return

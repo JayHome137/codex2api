@@ -1514,6 +1514,9 @@ func (db *DB) migrate(ctx context.Context) error {
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_continue_thinking_enabled BOOLEAN DEFAULT FALSE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_continue_max_rounds INT DEFAULT 8;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_synced_cli_version TEXT DEFAULT '';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_synced_desktop_mac_build TEXT DEFAULT '';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_synced_desktop_windows_build TEXT DEFAULT '';
+	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_synced_vscode_build TEXT DEFAULT '';
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_cli_version_sync_enabled BOOLEAN DEFAULT TRUE;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS codex_cli_version_sync_interval_hours INT DEFAULT 12;
 	ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS claude_synced_cli_version TEXT DEFAULT '';
@@ -2475,7 +2478,10 @@ type SystemSettings struct {
 	TransportRetryPolicy        string // 传输错误重试策略: rotate（换号，旧行为）/ sticky（同号延迟重试）
 	// CodexSyncedCLIVersion 是从 openai/codex releases 同步到的最新 Codex CLI 版本缓存，
 	// 用于抬升出站 UA / manifest 的模拟版本（绝不低于内置常量），空表示尚未同步。
-	CodexSyncedCLIVersion string
+	CodexSyncedCLIVersion          string
+	CodexSyncedDesktopMacBuild     string
+	CodexSyncedDesktopWindowsBuild string
+	CodexSyncedVSCodeBuild         string
 	// CodexCLIVersionSyncEnabled 控制是否后台定时自动同步 Codex CLI 版本（默认 true）。
 	CodexCLIVersionSyncEnabled bool
 	// CodexCLIVersionSyncIntervalHours 是定时同步间隔（小时，默认 12，范围 1-720）。
@@ -2814,6 +2820,15 @@ func (db *DB) GetSystemSettings(ctx context.Context) (*SystemSettings, error) {
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := db.conn.QueryRowContext(ctx, `SELECT COALESCE(codex_synced_desktop_mac_build, ''),
+		COALESCE(codex_synced_desktop_windows_build, ''), COALESCE(codex_synced_vscode_build, '')
+		FROM system_settings WHERE id = 1`).Scan(&s.CodexSyncedDesktopMacBuild,
+		&s.CodexSyncedDesktopWindowsBuild, &s.CodexSyncedVSCodeBuild); err != nil {
+		return nil, err
 	}
 	s.SiteName = NormalizeSiteName(s.SiteName)
 	s.SiteLogo = strings.TrimSpace(s.SiteLogo)
@@ -3262,6 +3277,23 @@ func (db *DB) UpdateCodexSyncedCLIVersion(ctx context.Context, version string) e
 		ON CONFLICT (id) DO UPDATE SET
 			codex_synced_cli_version = EXCLUDED.codex_synced_cli_version
 	`, strings.TrimSpace(version))
+	return err
+}
+
+// UpdateCodexSyncedAppBuild 只更新一个已知客户端的构建号，不回写整个设置快照。
+func (db *DB) UpdateCodexSyncedAppBuild(ctx context.Context, kind, version string) error {
+	columns := map[string]string{
+		"desktop-mac":     "codex_synced_desktop_mac_build",
+		"desktop-windows": "codex_synced_desktop_windows_build",
+		"vscode":          "codex_synced_vscode_build",
+	}
+	column, ok := columns[kind]
+	if !ok {
+		return fmt.Errorf("unknown Codex app build kind %q", kind)
+	}
+	query := fmt.Sprintf(`INSERT INTO system_settings (id, %s) VALUES (1, $1)
+		ON CONFLICT (id) DO UPDATE SET %s = EXCLUDED.%s`, column, column, column)
+	_, err := db.conn.ExecContext(ctx, query, strings.TrimSpace(version))
 	return err
 }
 
