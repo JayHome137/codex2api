@@ -120,7 +120,7 @@ jobs:
           {
             echo "### Upstream release sync"
             echo
-            echo "Synchronized upstream release \`${latest_tag}\` (`${upstream_sha}\`)."
+            echo "Synchronized upstream release \`${latest_tag}\` (${upstream_sha})."
             echo "- main baseline updated"
             echo "- custom branch updated: \`${custom_sha}\`"
             echo "- conflict policy: custom billing files prefer custom; all other conflicts prefer upstream"
