@@ -10,8 +10,10 @@ permissions:
   contents: write
 
 concurrency:
-  group: custom-release-${{ github.sha }}
-  cancel-in-progress: true
+  # A single release lane prevents two custom commits from racing for the
+  # same upstream version tag. New commits wait for the current validation.
+  group: custom-release
+  cancel-in-progress: false
 
 env:
   UPSTREAM_REPOSITORY: james-6-23/codex2api
@@ -20,7 +22,7 @@ env:
 jobs:
   promote-validated-custom:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 35
     outputs:
       should_release: ${{ steps.promote.outputs.should_release }}
       release_tag: ${{ steps.promote.outputs.release_tag }}
@@ -45,10 +47,10 @@ jobs:
           security_conclusion=""
           for attempt in $(seq 1 60); do
             runs_json=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SOURCE_SHA}&event=push&per_page=100")
-            ci_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "CI" and .head_branch == env.TARGET_BRANCH) | .conclusion] | last // ""' <<< "$runs_json")
-            security_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "Security Scan" and .head_branch == env.TARGET_BRANCH) | .conclusion] | last // ""' <<< "$runs_json")
-            ci_status=$(jq -r '[.workflow_runs[] | select(.name == "CI" and .head_branch == env.TARGET_BRANCH) | .status] | last // ""' <<< "$runs_json")
-            security_status=$(jq -r '[.workflow_runs[] | select(.name == "Security Scan" and .head_branch == env.TARGET_BRANCH) | .status] | last // ""' <<< "$runs_json")
+            ci_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "CI" and .head_branch == env.TARGET_BRANCH and .head_sha == env.SOURCE_SHA)] | sort_by(.created_at) | last | .conclusion // ""' <<< "$runs_json")
+            security_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "Security Scan" and .head_branch == env.TARGET_BRANCH and .head_sha == env.SOURCE_SHA)] | sort_by(.created_at) | last | .conclusion // ""' <<< "$runs_json")
+            ci_status=$(jq -r '[.workflow_runs[] | select(.name == "CI" and .head_branch == env.TARGET_BRANCH and .head_sha == env.SOURCE_SHA)] | sort_by(.created_at) | last | .status // ""' <<< "$runs_json")
+            security_status=$(jq -r '[.workflow_runs[] | select(.name == "Security Scan" and .head_branch == env.TARGET_BRANCH and .head_sha == env.SOURCE_SHA)] | sort_by(.created_at) | last | .status // ""' <<< "$runs_json")
             if [[ "$ci_conclusion" == "success" && "$security_conclusion" == "success" ]]; then
               break
             fi
@@ -60,7 +62,7 @@ jobs:
               echo "Timed out waiting for CI and Security Scan: CI=${ci_conclusion:-$ci_status}, Security=${security_conclusion:-$security_status}" >&2
               exit 1
             fi
-            sleep 20
+            sleep 30
           done
 
           git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
@@ -90,7 +92,12 @@ jobs:
           fi
 
           existing_tag_sha=$(git ls-remote origin "refs/tags/${upstream_tag}^{}" | awk 'NR == 1 { print $1 }')
-          if [[ -n "$existing_tag_sha" && "$existing_tag_sha" != "$SOURCE_SHA" ]]; then
+          if [[ -n "$existing_tag_sha" && "$existing_tag_sha" == "$SOURCE_SHA" ]]; then
+            echo "Remote tag ${upstream_tag} already points to ${SOURCE_SHA}; reusing it."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -n "$existing_tag_sha" ]]; then
             if ! git merge-base --is-ancestor "$existing_tag_sha" "$SOURCE_SHA"; then
               echo "Remote tag ${upstream_tag} points to unrelated commit ${existing_tag_sha}." >&2
               exit 1

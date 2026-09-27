@@ -432,7 +432,7 @@ export default function AccountQuickConfigSheet({
                 </div>
               )}
               <div className="flex items-center justify-between gap-2 border-t border-border/40 pt-2 text-[11px] text-muted-foreground">
-                <span>{rateProbeMessage || (account.sub2_upstream_rate_multiplier ? `当前倍率 ×${account.sub2_upstream_rate_multiplier.toFixed(4)}` : "尚未探查")}</span>
+                <span>{rateProbeMessage || (account.sub2_upstream_rate_available ? `当前倍率 ×${(account.sub2_upstream_rate_multiplier ?? 0).toFixed(4)}` : "尚未探查")}</span>
                 <Button type="button" size="sm" variant="outline" disabled={probingRate} onClick={async () => {
                   setProbingRate(true);
                   try {

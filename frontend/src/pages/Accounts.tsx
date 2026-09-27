@@ -3742,7 +3742,7 @@ export default function Accounts() {
       if (
         editOpenAIForm.sub2_upstream_rate_probe_enabled &&
         (!editingAccount.sub2_upstream_rate_probe_enabled ||
-          !editingAccount.sub2_upstream_rate_multiplier)
+          !editingAccount.sub2_upstream_rate_available)
       ) {
         try {
           const probe = await api.probeSub2UpstreamRate(editingAccount.id);
@@ -14739,12 +14739,14 @@ function APIAccountBalanceBadge({ accountId }: { accountId: number }) {
 
 function UpstreamRateBadge({ account }: { account: AccountRow }) {
   const [multiplier, setMultiplier] = useState(account.sub2_upstream_rate_multiplier);
+  const [rateAvailable, setRateAvailable] = useState(account.sub2_upstream_rate_available === true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     setMultiplier(account.sub2_upstream_rate_multiplier);
-  }, [account.sub2_upstream_rate_multiplier]);
+    setRateAvailable(account.sub2_upstream_rate_available === true);
+  }, [account.sub2_upstream_rate_available, account.sub2_upstream_rate_multiplier]);
 
   const probe = async (event: ReactMouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
@@ -14753,8 +14755,9 @@ function UpstreamRateBadge({ account }: { account: AccountRow }) {
     setError("");
     try {
       const result = await api.probeSub2UpstreamRate(account.id);
-      if (result.available && typeof result.multiplier === "number" && result.multiplier > 0) {
+      if (result.available && typeof result.multiplier === "number" && result.multiplier >= 0) {
         setMultiplier(result.multiplier);
+        setRateAvailable(true);
       } else {
         setError(result.error || "上游未返回有效倍率");
       }
@@ -14765,7 +14768,7 @@ function UpstreamRateBadge({ account }: { account: AccountRow }) {
     }
   };
 
-  const hasMultiplier = typeof multiplier === "number" && multiplier > 0;
+  const hasMultiplier = rateAvailable;
   return (
     <button
       type="button"
@@ -14775,7 +14778,7 @@ function UpstreamRateBadge({ account }: { account: AccountRow }) {
       title={error || (hasMultiplier ? "点击重新探查上游倍率" : "点击探查上游倍率")}
     >
       {loading && <Loader2 className="size-3 shrink-0 animate-spin" aria-hidden />}
-      上游倍率：{hasMultiplier ? `×${multiplier.toFixed(4)}` : error ? "探查失败" : "未探查"}
+      上游倍率：{hasMultiplier ? `×${(multiplier ?? 0).toFixed(4)}` : error ? "探查失败" : "未探查"}
     </button>
   );
 }

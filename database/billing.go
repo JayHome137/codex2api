@@ -375,7 +375,10 @@ func UsageLogBilledCost(log *UsageLogInput) float64 {
 		return log.billingSnapshot.accountCost
 	}
 	cost := UsageLogCostBreakdown(log).TotalCost
-	if log.UpstreamRateMultiplier > 0 {
+	// A successful probe may legitimately return zero (for example, a free
+	// upstream tier). Keep the legacy positive-multiplier fallback for callers
+	// that construct UsageLogInput without the availability flag.
+	if log.UpstreamCostAvailable || log.UpstreamRateMultiplier > 0 {
 		cost *= log.UpstreamRateMultiplier
 	}
 	return cost

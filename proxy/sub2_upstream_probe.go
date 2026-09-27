@@ -26,7 +26,7 @@ var sub2RateIntervals = map[int64]bool{5: true, 10: true, 20: true, 30: true}
 // populateSub2UpstreamCost probes on eligible account traffic, then applies the
 // last known multiplier to this request's Codex2API bill.
 func (h *Handler) populateSub2UpstreamCost(input *database.UsageLogInput) {
-	if h == nil || input == nil || input.AccountID <= 0 || h.store == nil || h.db == nil || input.UpstreamRateMultiplier > 0 {
+	if h == nil || input == nil || input.AccountID <= 0 || h.store == nil || h.db == nil || input.UpstreamCostAvailable {
 		return
 	}
 	account := h.store.FindByID(input.AccountID)
@@ -50,16 +50,32 @@ func (h *Handler) populateSub2UpstreamCost(input *database.UsageLogInput) {
 	}
 	lastProbe, _ := time.Parse(time.RFC3339, row.GetCredential("sub2_upstream_rate_probe_at"))
 	multiplier, hasRate := row.GetCredentialFloat64("sub2_upstream_rate_multiplier")
+	hasRate = hasRate && strings.TrimSpace(row.GetCredential("sub2_upstream_rate_success_at")) != ""
 	if !lastProbe.IsZero() && now.Before(lastProbe.Add(time.Duration(interval)*time.Minute)) {
-		if hasRate && multiplier > 0 {
+		if hasRate {
 			applySub2Rate(input, multiplier)
 		}
 		return
 	}
+	// The request must never wait for a potentially slow upstream probe. The
+	// saved successful value above is still applied to this request; this
+	// background refresh is used by subsequent requests.
+	go h.refreshSub2UpstreamRate(account.DBID, baseURL, apiKey, account.GetProxyURL(), account.GetCustomHeaders())
+	if hasRate {
+		applySub2Rate(input, multiplier)
+	}
+}
+
+func (h *Handler) refreshSub2UpstreamRate(accountID int64, baseURL, apiKey, proxyURL string, headers map[string]string) {
+	if h == nil || h.db == nil || accountID <= 0 {
+		return
+	}
 	// Duplicate traffic for the same account shares one probe result.
-	result, _, _ := h.sub2RateFlight.Do(strconv.FormatInt(account.DBID, 10), func() (interface{}, error) {
+	_, _, _ = h.sub2RateFlight.Do(strconv.FormatInt(accountID, 10), func() (interface{}, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
 		checkedAt := time.Now().UTC()
-		value, ok := QuerySub2EffectiveRateMultiplier(baseURL, apiKey, account.ProxyURL, account.CustomHeaders)
+		value, ok := QuerySub2EffectiveRateMultiplier(baseURL, apiKey, proxyURL, headers)
 		updates := map[string]interface{}{
 			"sub2_upstream_rate_probe_at": checkedAt.Format(time.RFC3339),
 		}
@@ -68,23 +84,15 @@ func (h *Handler) populateSub2UpstreamCost(input *database.UsageLogInput) {
 			updates["sub2_upstream_rate_success_at"] = checkedAt.Format(time.RFC3339)
 			updates["sub2_upstream_rate_probe_error"] = ""
 		} else {
+			// Keep the last successful multiplier. A transient probe failure must
+			// not silently turn a previously known upstream cost into an unknown one.
 			updates["sub2_upstream_rate_probe_error"] = "上游未返回有效倍率"
 		}
-		_ = h.db.UpdateCredentials(ctx, input.AccountID, updates)
-		return struct {
-			multiplier float64
-			ok         bool
-		}{value, ok}, nil
+		if err := h.db.UpdateCredentials(ctx, accountID, updates); err != nil {
+			return nil, err
+		}
+		return value, nil
 	})
-	if probed, ok := result.(struct {
-		multiplier float64
-		ok         bool
-	}); ok && probed.ok {
-		multiplier, hasRate = probed.multiplier, true
-	}
-	if hasRate && multiplier > 0 {
-		applySub2Rate(input, multiplier)
-	}
 }
 
 func applySub2Rate(input *database.UsageLogInput, multiplier float64) {
@@ -286,12 +294,12 @@ func equalSub2Multiplier(left, right float64) bool {
 func parseSub2UsageRateMultiplier(body []byte) (float64, bool) {
 	for _, path := range []string{
 		"effective_rate_multiplier", "rate_multiplier", "data.effective_rate_multiplier",
-		"data.rate_multiplier", "billing.effective_rate_multiplier", "data.billing.effective_rate_multiplier",
+		"data.rate_multiplier",
 	} {
 		value := gjson.GetBytes(body, path)
-		if value.Exists() {
+		if value.Exists() && value.Type == gjson.Number {
 			multiplier := value.Float()
-			if validSub2Multiplier(multiplier) && multiplier > 0 {
+			if validSub2Multiplier(multiplier) {
 				return multiplier, true
 			}
 		}

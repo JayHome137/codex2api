@@ -68,6 +68,22 @@ func TestUpstreamRateMultiplierAppliesToTokenAndAccountBilling(t *testing.T) {
 	}
 }
 
+func TestZeroUpstreamRateAppliesWhenProbeWasSuccessful(t *testing.T) {
+	input := &UsageLogInput{
+		Model:                  "gpt-5.6-sol",
+		InputTokens:            1_000,
+		OutputTokens:           1_000,
+		UpstreamRateMultiplier: 0,
+		UpstreamCostAvailable:  true,
+	}
+	if got := UsageLogBilledCost(input); got != 0 {
+		t.Fatalf("account cost = %v, want 0", got)
+	}
+	if got := UsageLogUserBilledCost(input); got != 0 {
+		t.Fatalf("token user cost = %v, want 0", got)
+	}
+}
+
 func TestUpstreamRateMultiplierDoesNotChangePerImageUserBilling(t *testing.T) {
 	previous := currentModelPricingOverrides()
 	t.Cleanup(func() { SetModelPricingOverrides(previous) })
