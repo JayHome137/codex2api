@@ -40,9 +40,9 @@ jobs:
             "refs/heads/main:refs/remotes/origin/main" \
             "refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
 
-          # These files contain the custom multiplier, health-monitor and
-          # mobile cost-detail behavior. Reapply their custom snapshot after
-          # every merge so a clean upstream merge cannot silently replace it.
+          # These files contain custom multiplier, health-monitor and mobile
+          # cost-detail behavior. Prefer the custom side only when a file has
+          # a real merge conflict; clean upstream changes remain applicable.
           custom_preserve_paths=(
             admin/account_response_builder.go
             admin/channel_monitor.go
@@ -138,7 +138,7 @@ jobs:
           git push origin HEAD:refs/heads/main
 
           # Merge the same release into the custom branch. Custom behavior is
-          # reapplied below even when Git can merge a file without conflict.
+          # protected on conflicts and validated after every merge.
           git switch --create custom-sync "refs/remotes/origin/${TARGET_BRANCH}"
           merge_had_conflicts=false
           if ! git merge --no-edit --no-commit --no-ff "$upstream_sha"; then
@@ -153,25 +153,13 @@ jobs:
             done < <(git diff --name-only --diff-filter=U)
           fi
 
-          # Reapply the complete custom snapshot after the merge. This also
-          # covers files where upstream changes merged cleanly and therefore
-          # never appeared in the unmerged path list above.
-          for path in "${custom_preserve_paths[@]}"; do
-            if git cat-file -e "refs/remotes/origin/${TARGET_BRANCH}:${path}" 2>/dev/null; then
-              git checkout "refs/remotes/origin/${TARGET_BRANCH}" -- "$path"
-              git add -A -- "$path"
-            else
-              git rm -f --ignore-unmatch -- "$path"
-            fi
-          done
           for path in "${custom_remove_paths[@]}"; do
             git rm -f --ignore-unmatch -- "$path"
           done
 
           # Upstream 3.0.2+ contains a second channel billing-rate feature.
-          # It must never return alongside the custom Sub2API probe, even via
-          # a clean merge. Fail before publishing if any forbidden contract is
-          # present in the resulting custom tree.
+          # Keep only the custom Sub2API probe. Validate its key behavior and
+          # the mobile tooltip integration before publishing the merged tree.
           contract_failed=false
           for path in "${custom_remove_paths[@]}"; do
             if [[ -e "$path" ]]; then
@@ -190,6 +178,28 @@ jobs:
             echo "Custom contract violation: upstream channel billing-rate code is present" >&2
             contract_failed=true
           fi
+          required_contracts=(
+            'admin/channel_monitor.go|func (h *Handler) ListChannelMonitors'
+            'admin/channel_monitor.go|func (h *Handler) ProbeChannelMonitorNow'
+            'database/channel_monitor.go|CREATE TABLE IF NOT EXISTS channel_monitor_configs'
+            'database/channel_monitor.go|CREATE TABLE IF NOT EXISTS channel_monitor_checks'
+            'frontend/src/pages/ChannelMonitor.tsx|ChannelMonitor'
+            'proxy/sub2_upstream_probe.go|/v1/sub2api/billing'
+            'proxy/sub2_upstream_probe.go|/v1/usage'
+            'proxy/sub2_upstream_probe.go|parseSub2BillingRateMultiplier'
+            'proxy/handler.go|populateSub2UpstreamCost'
+            'frontend/src/components/ui/tooltip.tsx|function ResponsiveTooltip'
+            'frontend/src/components/ui/tooltip.tsx|ResponsiveTooltip }'
+            'frontend/src/pages/APIKeyUsagePortal.tsx|<ResponsiveTooltip'
+            'frontend/src/pages/Usage.tsx|<ResponsiveTooltip'
+          )
+          for contract in "${required_contracts[@]}"; do
+            IFS='|' read -r path expected <<< "$contract"
+            if ! rg -Fq -- "$expected" "$path"; then
+              echo "Custom contract violation: expected '$expected' in $path" >&2
+              contract_failed=true
+            fi
+          done
           if [[ "$contract_failed" == true ]]; then
             exit 1
           fi
@@ -215,6 +225,7 @@ jobs:
             echo "Synchronized upstream release \`${latest_tag}\` (${upstream_sha})."
             echo "- main baseline updated"
             echo "- custom branch updated: \`${custom_sha}\`"
-            echo "- custom multiplier, channel health-monitor and mobile cost-detail files were reapplied"
+            echo "- custom paths were preferred only on merge conflicts"
+            echo "- multiplier, health-monitor and mobile tooltip contracts passed"
             echo "- upstream channel billing-rate implementation was removed and checked"
           } >> "$GITHUB_STEP_SUMMARY"
