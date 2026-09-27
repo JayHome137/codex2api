@@ -4270,76 +4270,76 @@ type UsageLog struct {
 	UpstreamResponseModel string `json:"upstream_response_model,omitempty"`
 	// UpstreamModelMismatch 三态：nil=上游未自报（或历史行），无法比对；
 	// true/false=已比对，上游自报与实发模型是否一致。
-	UpstreamModelMismatch  *bool     `json:"upstream_model_mismatch,omitempty"`
-	PromptTokens           int       `json:"prompt_tokens"`
-	CompletionTokens       int       `json:"completion_tokens"`
-	TotalTokens            int       `json:"total_tokens"`
-	StatusCode             int       `json:"status_code"`
-	DurationMs             int       `json:"duration_ms"`
-	InputTokens            int       `json:"input_tokens"`
-	OutputTokens           int       `json:"output_tokens"`
-	ReasoningTokens        int       `json:"reasoning_tokens"`
-	FirstTokenMs           int       `json:"first_token_ms"`
-	WsAcquireMs            int       `json:"ws_acquire_ms"`
-	ReasoningEffort        string    `json:"reasoning_effort"`
-	InboundEndpoint        string    `json:"inbound_endpoint"`
-	UpstreamEndpoint       string    `json:"upstream_endpoint"`
-	Stream                 bool      `json:"stream"`
-	Compact                bool      `json:"compact"`
-	HasCompactionHistory   bool      `json:"has_compaction_history"`
-	Ultra                  bool      `json:"ultra"`
-	ViaWebsocket           bool      `json:"via_websocket"`
-	CachedTokens           int       `json:"cached_tokens"`
-	ImageInputTokens       int       `json:"image_input_tokens"`
-	ImageOutputTokens      int       `json:"image_output_tokens"`
-	CachedImageInputTokens int       `json:"cached_image_input_tokens"`
-	CacheWrite5mTokens     int       `json:"cache_write_5m_tokens"`
-	CacheWrite1hTokens     int       `json:"cache_write_1h_tokens"`
-	ServiceTier            string    `json:"service_tier"`
-	RequestedServiceTier   string    `json:"requested_service_tier"`
-	ActualServiceTier      string    `json:"actual_service_tier"`
-	BillingServiceTier     string    `json:"billing_service_tier"`
-	APIKeyID               int64     `json:"api_key_id"`
-	APIKeyName             string    `json:"api_key_name"`
-	APIKeyMasked           string    `json:"api_key_masked"`
-	ImageCount             int       `json:"image_count"`
-	ImageWidth             int       `json:"image_width"`
-	ImageHeight            int       `json:"image_height"`
-	ImageBytes             int       `json:"image_bytes"`
-	ImageFormat            string    `json:"image_format"`
-	ImageSize              string    `json:"image_size"`
-	AccountName            string    `json:"account_name"`
-	AccountEmail           string    `json:"account_email"`
-	CreatedAt              time.Time `json:"created_at"`
-	AccountBilled          float64   `json:"account_billed"`
-	UserBilled             float64   `json:"user_billed"`
-	UpstreamCost           float64   `json:"upstream_cost"`
-	UpstreamRateMultiplier float64   `json:"upstream_rate_multiplier"`
-	UpstreamCostAvailable  bool      `json:"upstream_cost_available"`
-	UpstreamCostProvider   string    `json:"upstream_cost_provider,omitempty"`
-	ImageInputCost         float64   `json:"image_input_cost"`
-	ImageCacheReadCost     float64   `json:"image_cache_read_cost"`
-	ImageInputPrice        float64   `json:"image_input_price_per_mtoken"`
-	CachedImageInputPrice  float64   `json:"cached_image_input_price_per_mtoken"`
-	InputCost              float64   `json:"input_cost"`
-	OutputCost             float64   `json:"output_cost"`
-	CacheReadCost          float64   `json:"cache_read_cost"`
-	CacheWrite5mCost       float64   `json:"cache_write_5m_cost"`
-	CacheWrite1hCost       float64   `json:"cache_write_1h_cost"`
-	CacheWrite5mPrice      float64   `json:"cache_write_5m_price_per_mtoken"`
-	CacheWrite1hPrice      float64   `json:"cache_write_1h_price_per_mtoken"`
-	TotalCost              float64   `json:"total_cost"`
-	InputPrice             float64   `json:"input_price_per_mtoken"`
-	OutputPrice            float64   `json:"output_price_per_mtoken"`
-	CacheReadPrice         float64   `json:"cache_read_price_per_mtoken"`
-	RateMultiplier         float64   `json:"rate_multiplier"`
-	LongContext            bool      `json:"long_context"`
-	LongContextThreshold   int       `json:"long_context_threshold"`
-	IsRetryAttempt         bool      `json:"is_retry_attempt"`
-	AttemptIndex           int       `json:"attempt_index"`
-	UpstreamErrorKind      string    `json:"upstream_error_kind"`
-	ErrorMessage           string    `json:"error_message"`
-	PromptPolicyIncidentID string    `json:"prompt_policy_incident_id,omitempty"`
+	UpstreamModelMismatch    *bool     `json:"upstream_model_mismatch,omitempty"`
+	PromptTokens             int       `json:"prompt_tokens"`
+	CompletionTokens         int       `json:"completion_tokens"`
+	TotalTokens              int       `json:"total_tokens"`
+	StatusCode               int       `json:"status_code"`
+	DurationMs               int       `json:"duration_ms"`
+	InputTokens              int       `json:"input_tokens"`
+	OutputTokens             int       `json:"output_tokens"`
+	ReasoningTokens          int       `json:"reasoning_tokens"`
+	FirstTokenMs             int       `json:"first_token_ms"`
+	WsAcquireMs              int       `json:"ws_acquire_ms"`
+	ReasoningEffort          string    `json:"reasoning_effort"`
+	InboundEndpoint          string    `json:"inbound_endpoint"`
+	UpstreamEndpoint         string    `json:"upstream_endpoint"`
+	Stream                   bool      `json:"stream"`
+	Compact                  bool      `json:"compact"`
+	HasCompactionHistory     bool      `json:"has_compaction_history"`
+	Ultra                    bool      `json:"ultra"`
+	ViaWebsocket             bool      `json:"via_websocket"`
+	CachedTokens             int       `json:"cached_tokens"`
+	ImageInputTokens         int       `json:"image_input_tokens"`
+	ImageOutputTokens        int       `json:"image_output_tokens"`
+	CachedImageInputTokens   int       `json:"cached_image_input_tokens"`
+	CacheWrite5mTokens       int       `json:"cache_write_5m_tokens"`
+	CacheWrite1hTokens       int       `json:"cache_write_1h_tokens"`
+	ServiceTier              string    `json:"service_tier"`
+	RequestedServiceTier     string    `json:"requested_service_tier"`
+	ActualServiceTier        string    `json:"actual_service_tier"`
+	BillingServiceTier       string    `json:"billing_service_tier"`
+	APIKeyID                 int64     `json:"api_key_id"`
+	APIKeyName               string    `json:"api_key_name"`
+	APIKeyMasked             string    `json:"api_key_masked"`
+	ImageCount               int       `json:"image_count"`
+	ImageWidth               int       `json:"image_width"`
+	ImageHeight              int       `json:"image_height"`
+	ImageBytes               int       `json:"image_bytes"`
+	ImageFormat              string    `json:"image_format"`
+	ImageSize                string    `json:"image_size"`
+	AccountName              string    `json:"account_name"`
+	AccountEmail             string    `json:"account_email"`
+	CreatedAt                time.Time `json:"created_at"`
+	AccountBilled            float64   `json:"account_billed"`
+	UserBilled               float64   `json:"user_billed"`
+	UpstreamCost             float64   `json:"upstream_cost"`
+	UpstreamRateMultiplier   float64   `json:"upstream_rate_multiplier"`
+	UpstreamCostAvailable    bool      `json:"upstream_cost_available"`
+	UpstreamCostProvider     string    `json:"upstream_cost_provider,omitempty"`
+	ImageInputCost           float64   `json:"image_input_cost"`
+	ImageCacheReadCost       float64   `json:"image_cache_read_cost"`
+	ImageInputPrice          float64   `json:"image_input_price_per_mtoken"`
+	CachedImageInputPrice    float64   `json:"cached_image_input_price_per_mtoken"`
+	InputCost                float64   `json:"input_cost"`
+	OutputCost               float64   `json:"output_cost"`
+	CacheReadCost            float64   `json:"cache_read_cost"`
+	CacheWrite5mCost         float64   `json:"cache_write_5m_cost"`
+	CacheWrite1hCost         float64   `json:"cache_write_1h_cost"`
+	CacheWrite5mPrice        float64   `json:"cache_write_5m_price_per_mtoken"`
+	CacheWrite1hPrice        float64   `json:"cache_write_1h_price_per_mtoken"`
+	TotalCost                float64   `json:"total_cost"`
+	InputPrice               float64   `json:"input_price_per_mtoken"`
+	OutputPrice              float64   `json:"output_price_per_mtoken"`
+	CacheReadPrice           float64   `json:"cache_read_price_per_mtoken"`
+	RateMultiplier           float64   `json:"rate_multiplier"`
+	LongContext              bool      `json:"long_context"`
+	LongContextThreshold     int       `json:"long_context_threshold"`
+	IsRetryAttempt           bool      `json:"is_retry_attempt"`
+	AttemptIndex             int       `json:"attempt_index"`
+	UpstreamErrorKind        string    `json:"upstream_error_kind"`
+	ErrorMessage             string    `json:"error_message"`
+	PromptPolicyIncidentID   string    `json:"prompt_policy_incident_id,omitempty"`
 	ModelInputPrice          float64   `json:"model_input_price_per_mtoken"`
 	ModelOutputPrice         float64   `json:"model_output_price_per_mtoken"`
 	ModelCacheReadPrice      float64   `json:"model_cache_read_price_per_mtoken"`
@@ -4540,6 +4540,7 @@ type UsageLogInput struct {
 	Endpoint             string
 	Model                string
 	EffectiveModel       string
+	DaybreakProgram      string
 	// UpstreamResponseModel 是上游响应自报的模型名（观测值，未自报为空串）。
 	UpstreamResponseModel string
 	// UpstreamModelMismatch 三态：nil=上游未自报；true/false=自报与实发是否一致。
