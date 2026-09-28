@@ -40,6 +40,60 @@ jobs:
             "refs/heads/main:refs/remotes/origin/main" \
             "refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
 
+          # These files contain custom multiplier, health-monitor and mobile
+          # cost-detail behavior. Prefer the custom side only when a file has
+          # a real merge conflict; clean upstream changes remain applicable.
+          custom_preserve_paths=(
+            admin/account_response_builder.go
+            admin/channel_monitor.go
+            admin/channel_monitor_probe.go
+            admin/channel_monitor_probe_test.go
+            admin/handler.go
+            admin/sub2_upstream_rate.go
+            admin/system_update.go
+            database/api_key_usage.go
+            database/billing.go
+            database/billing_test.go
+            database/channel_monitor.go
+            database/channel_monitor_test.go
+            database/image_user_billing_test.go
+            database/postgres.go
+            database/sqlite.go
+            database/sub2_upstream_billing.go
+            database/sub2_upstream_billing_test.go
+            database/usage_compaction_history_test.go
+            docs/sub2api-upstream-billing-phase1.md
+            frontend/src/api.ts
+            frontend/src/components/AccountQuickConfigSheet.tsx
+            frontend/src/components/ChannelMonitorConfigDialog.tsx
+            frontend/src/components/Layout.tsx
+            frontend/src/components/ui/tooltip.tsx
+            frontend/src/lib/accountQuickConfig.ts
+            frontend/src/locales/en.json
+            frontend/src/locales/zh.json
+            frontend/src/pages/APIKeyUsagePortal.tsx
+            frontend/src/pages/Accounts.tsx
+            frontend/src/pages/ChannelMonitor.tsx
+            frontend/src/pages/Usage.tsx
+            frontend/src/types.ts
+            proxy/handler.go
+            proxy/sub2_upstream_probe.go
+            proxy/sub2_upstream_probe_test.go
+          )
+          custom_remove_paths=(
+            frontend/src/lib/channelMonitorBilling.ts
+            frontend/src/lib/channelMonitorBilling.test.mjs
+          )
+
+          is_custom_preserve_path() {
+            local candidate="$1"
+            local path
+            for path in "${custom_preserve_paths[@]}"; do
+              [[ "$candidate" == "$path" ]] && return 0
+            done
+            return 1
+          }
+
           latest_tag=$(git ls-remote --tags --refs upstream 'v[0-9]*' \
             | awk -F/ '{print $3}' \
             | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
@@ -83,23 +137,71 @@ jobs:
           git commit -m "chore: sync upstream release ${latest_tag}"
           git push origin HEAD:refs/heads/main
 
-          # Merge the same release into the custom branch. Only the files that
-          # carry upstream-billing behavior prefer the custom side on conflict.
+          # Merge the same release into the custom branch. Custom behavior is
+          # protected on conflicts and validated after every merge.
           git switch --create custom-sync "refs/remotes/origin/${TARGET_BRANCH}"
           merge_had_conflicts=false
           if ! git merge --no-edit --no-commit --no-ff "$upstream_sha"; then
             merge_had_conflicts=true
             while IFS= read -r path; do
-              case "$path" in
-                admin/account_response_builder.go|admin/handler.go|admin/sub2_upstream_rate.go|admin/system_update.go|database/api_key_usage.go|database/billing.go|database/billing_test.go|database/image_user_billing_test.go|database/postgres.go|database/sqlite.go|database/sub2_upstream_billing.go|database/sub2_upstream_billing_test.go|database/usage_compaction_history_test.go|docs/sub2api-upstream-billing-phase1.md|frontend/src/api.ts|frontend/src/components/AccountQuickConfigSheet.tsx|frontend/src/components/Layout.tsx|frontend/src/lib/accountQuickConfig.ts|frontend/src/locales/en.json|frontend/src/locales/zh.json|frontend/src/pages/APIKeyUsagePortal.tsx|frontend/src/pages/Accounts.tsx|frontend/src/pages/Usage.tsx|frontend/src/types.ts|proxy/handler.go|proxy/sub2_upstream_probe.go|proxy/sub2_upstream_probe_test.go)
-                  git checkout --ours -- "$path"
-                  ;;
-                *)
-                  git checkout --theirs -- "$path"
-                  ;;
-              esac
+              if is_custom_preserve_path "$path"; then
+                git checkout --ours -- "$path"
+              else
+                git checkout --theirs -- "$path"
+              fi
               git add -A -- "$path"
             done < <(git diff --name-only --diff-filter=U)
+          fi
+
+          for path in "${custom_remove_paths[@]}"; do
+            git rm -f --ignore-unmatch -- "$path"
+          done
+
+          # Upstream 3.0.2+ contains a second channel billing-rate feature.
+          # Keep only the custom Sub2API probe. Validate its key behavior and
+          # the mobile tooltip integration before publishing the merged tree.
+          contract_failed=false
+          for path in "${custom_remove_paths[@]}"; do
+            if [[ -e "$path" ]]; then
+              echo "Custom contract violation: forbidden file exists: $path" >&2
+              contract_failed=true
+            fi
+          done
+          if rg -n --hidden --glob '!.git/**' --glob '!CHANGELOG.md' --glob '!docs/**' \
+            --glob '!test-results/**' --glob '!.github/workflows/upstream-sync.yml' \
+            -e 'ChannelMonitorBilling' \
+            -e 'channelMonitorBilling' \
+            -e 'BillingRates' \
+            -e 'probeResponsesBilling' \
+            -e 'RecordChannelMonitorBilling' \
+            -e '/channel-monitors/billing-rates' .; then
+            echo "Custom contract violation: upstream channel billing-rate code is present" >&2
+            contract_failed=true
+          fi
+          required_contracts=(
+            'admin/channel_monitor.go|func (h *Handler) ListChannelMonitors'
+            'admin/channel_monitor.go|func (h *Handler) ProbeChannelMonitorNow'
+            'database/channel_monitor.go|CREATE TABLE IF NOT EXISTS channel_monitor_configs'
+            'database/channel_monitor.go|CREATE TABLE IF NOT EXISTS channel_monitor_checks'
+            'frontend/src/pages/ChannelMonitor.tsx|ChannelMonitor'
+            'proxy/sub2_upstream_probe.go|/v1/sub2api/billing'
+            'proxy/sub2_upstream_probe.go|/v1/usage'
+            'proxy/sub2_upstream_probe.go|parseSub2BillingRateMultiplier'
+            'proxy/handler.go|populateSub2UpstreamCost'
+            'frontend/src/components/ui/tooltip.tsx|function ResponsiveTooltip'
+            'frontend/src/components/ui/tooltip.tsx|ResponsiveTooltip }'
+            'frontend/src/pages/APIKeyUsagePortal.tsx|<ResponsiveTooltip'
+            'frontend/src/pages/Usage.tsx|<ResponsiveTooltip'
+          )
+          for contract in "${required_contracts[@]}"; do
+            IFS='|' read -r path expected <<< "$contract"
+            if ! rg -Fq -- "$expected" "$path"; then
+              echo "Custom contract violation: expected '$expected' in $path" >&2
+              contract_failed=true
+            fi
+          done
+          if [[ "$contract_failed" == true ]]; then
+            exit 1
           fi
 
           printf '%s\n' "$latest_tag" > .upstream-release
@@ -120,8 +222,10 @@ jobs:
           {
             echo "### Upstream release sync"
             echo
-            echo "Synchronized upstream release \`${latest_tag}\` (`${upstream_sha}\`)."
+            echo "Synchronized upstream release \`${latest_tag}\` (${upstream_sha})."
             echo "- main baseline updated"
             echo "- custom branch updated: \`${custom_sha}\`"
-            echo "- conflict policy: custom billing files prefer custom; all other conflicts prefer upstream"
+            echo "- custom paths were preferred only on merge conflicts"
+            echo "- multiplier, health-monitor and mobile tooltip contracts passed"
+            echo "- upstream channel billing-rate implementation was removed and checked"
           } >> "$GITHUB_STEP_SUMMARY"
