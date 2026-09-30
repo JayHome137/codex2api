@@ -292,6 +292,7 @@ func (h *Handler) buildAccountResponse(
 		ClaudeVersionPolicyOverride:  claudeVersionPolicyOverride,
 		ClaudeClientVersionOverride:  claudeClientVersionOverride,
 		Timezone:                     accountTimezone,
+		AccountHref:                  strings.TrimSpace(row.GetCredential(auth.AccountHrefCredentialKey)),
 		Sub2UpstreamRateProbeEnabled: row.GetCredentialBool("sub2_upstream_rate_probe_enabled"),
 		Sub2UpstreamRateProbeIntervalMinutes: func() int64 {
 			if minutes, ok := row.GetCredentialInt64("sub2_upstream_rate_probe_interval_minutes"); ok && (minutes == 5 || minutes == 10 || minutes == 20 || minutes == 30) {
