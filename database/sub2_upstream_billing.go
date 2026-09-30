@@ -1,6 +1,9 @@
 package database
 
-import "strings"
+import (
+	"math"
+	"strings"
+)
 
 // Sub2UpstreamCost is the cost charged by a Sub2API-style upstream account.
 // It is deliberately separate from Codex2API's account/user billing fields.
@@ -39,6 +42,23 @@ var sub2UpstreamPrices = map[string]sub2UpstreamModelPrice{
 		Standard: sub2UpstreamPrice{2.5, 15, .25, 2.5, 5, 22.5, .5, 5},
 		Priority: sub2UpstreamPrice{5, 30, .5, 5, 10, 45, 1, 10},
 		Flex:     sub2UpstreamPrice{1.25, 7.5, .125, 1.25, 2.5, 11.25, .25, 2.5},
+	},
+	"gpt-5.4-mini": {
+		Standard: sub2UpstreamPrice{.75, 4.5, .075, 0, 0, 0, 0, 0},
+		Priority: sub2UpstreamPrice{1.5, 9, .15, 0, 0, 0, 0, 0},
+		Flex:     sub2UpstreamPrice{.375, 2.25, .0375, 0, 0, 0, 0, 0},
+	},
+	"gpt-5.4-nano": {
+		Standard: sub2UpstreamPrice{.2, 1.25, .02, 0, 0, 0, 0, 0},
+		Flex:     sub2UpstreamPrice{.1, .625, .01, 0, 0, 0, 0, 0},
+	},
+	"gpt-5.3-codex": {
+		Standard: sub2UpstreamPrice{1.5, 12, .15, 1.5, 0, 0, 0, 0},
+		Priority: sub2UpstreamPrice{3, 24, .3, 1.5, 0, 0, 0, 0},
+	},
+	"gpt-5.2": {
+		Standard: sub2UpstreamPrice{1.75, 14, .175, 1.75, 0, 0, 0, 0},
+		Priority: sub2UpstreamPrice{3.5, 28, .35, 1.75, 0, 0, 0, 0},
 	},
 	"gpt-5.5": {
 		Standard: sub2UpstreamPrice{5, 30, .5, 5, 10, 45, 1, 10},
@@ -86,7 +106,7 @@ var sub2UpstreamPrices = map[string]sub2UpstreamModelPrice{
 // multiplier must come from a successful upstream probe; callers should not
 // pass 1 as a fallback when the probe is unavailable.
 func CalculateSub2UpstreamCost(inputTokens, outputTokens, cachedTokens, cacheWrite5mTokens, cacheWrite1hTokens int, model, serviceTier string, multiplier float64) (Sub2UpstreamCost, bool) {
-	if multiplier <= 0 {
+	if multiplier < 0 || math.IsNaN(multiplier) || math.IsInf(multiplier, 0) {
 		return Sub2UpstreamCost{}, false
 	}
 	key := sub2UpstreamModelKey(model)
@@ -98,9 +118,17 @@ func CalculateSub2UpstreamCost(inputTokens, outputTokens, cachedTokens, cacheWri
 	tier := strings.ToLower(strings.TrimSpace(serviceTier))
 	switch tier {
 	case "fast", "priority", "ultrafast":
-		price = prices.Priority
+		if sub2PriceConfigured(prices.Priority) {
+			price = prices.Priority
+		} else {
+			price = scaleSub2Price(prices.Standard, 2)
+		}
 	case "flex":
-		price = prices.Flex
+		if sub2PriceConfigured(prices.Flex) {
+			price = prices.Flex
+		} else {
+			price = scaleSub2Price(prices.Standard, 0.5)
+		}
 	}
 
 	inputTokens = maxInt(0, inputTokens)
@@ -111,7 +139,10 @@ func CalculateSub2UpstreamCost(inputTokens, outputTokens, cachedTokens, cacheWri
 	// Sub2API determines the context band from the complete input context,
 	// including cache reads and cache creation tokens.
 	contextTokens := inputTokens + cachedTokens + cacheWrite5mTokens + cacheWrite1hTokens
-	long := contextTokens >= longContextThreshold
+	// OpenAI's default semantics are strictly "over the threshold". Sub2API
+	// uses an inclusive threshold only for models that explicitly declare it;
+	// these fixed fallback prices have no such declaration.
+	long := contextTokens > longContextThreshold
 	if long && price.LongInput > 0 {
 		price.Input, price.Output, price.CacheRead, price.CacheWrite = price.LongInput, price.LongOutput, price.LongCacheRead, price.LongCacheWrite
 	}
@@ -149,6 +180,23 @@ func sub2UpstreamModelKey(model string) string {
 		return "gpt-6-luna"
 	case strings.Contains(compact, "gpt-6-astra") || strings.Contains(compact, "gpt6-astra"):
 		return "gpt-6-astra"
+	case strings.Contains(compact, "gpt-5.4-mini") || strings.Contains(compact, "gpt5-4-mini"):
+		return "gpt-5.4-mini"
+	case strings.Contains(compact, "gpt-5.4-nano") || strings.Contains(compact, "gpt5-4-nano"):
+		return "gpt-5.4-nano"
+	case strings.Contains(compact, "gpt-5.4-pro") || strings.Contains(compact, "gpt5-4-pro"):
+		// Sub2API canonicalizes this alias to the regular GPT-5.4 price card.
+		return "gpt-5.4"
+	case strings.Contains(compact, "gpt-5.4") || strings.Contains(compact, "gpt5-4"):
+		return "gpt-5.4"
+	case strings.Contains(compact, "gpt-5.3-codex-spark") || strings.Contains(compact, "gpt5-3-codex-spark"):
+		return "gpt-5.3-codex"
+	case strings.Contains(compact, "gpt-5.3-codex") || strings.Contains(compact, "gpt5-3-codex"):
+		return "gpt-5.3-codex"
+	case strings.Contains(compact, "gpt-5.3") || strings.Contains(compact, "gpt5-3"):
+		return "gpt-5.3-codex"
+	case strings.Contains(compact, "gpt-5.2") || strings.Contains(compact, "gpt5-2"):
+		return "gpt-5.2"
 	case strings.Contains(compact, "gpt-5.6-sol") || strings.Contains(compact, "gpt5-6-sol"):
 		return "gpt-5.6-sol"
 	case strings.Contains(compact, "gpt-5.6-terra") || strings.Contains(compact, "gpt5-6-terra"):
@@ -164,4 +212,20 @@ func maxInt(v, floor int) int {
 		return floor
 	}
 	return v
+}
+
+func sub2PriceConfigured(price sub2UpstreamPrice) bool {
+	return price.Input > 0 || price.Output > 0 || price.CacheRead > 0 || price.CacheWrite > 0
+}
+
+func scaleSub2Price(price sub2UpstreamPrice, multiplier float64) sub2UpstreamPrice {
+	price.Input *= multiplier
+	price.Output *= multiplier
+	price.CacheRead *= multiplier
+	price.CacheWrite *= multiplier
+	price.LongInput *= multiplier
+	price.LongOutput *= multiplier
+	price.LongCacheRead *= multiplier
+	price.LongCacheWrite *= multiplier
+	return price
 }

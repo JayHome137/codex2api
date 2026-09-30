@@ -231,6 +231,8 @@ func (h *Handler) buildAccountResponse(
 		}
 		allowedAPIKeyIDs = row.GetCredentialInt64Slice("allowed_api_key_ids")
 	}
+	sub2RateMultiplier, sub2RateAvailable := row.GetCredentialFloat64("sub2_upstream_rate_multiplier")
+	sub2RateAvailable = sub2RateAvailable && strings.TrimSpace(row.GetCredential("sub2_upstream_rate_success_at")) != ""
 	resp := accountResponse{
 		DetailLoaded:                 includeDetails,
 		ID:                           row.ID,
@@ -259,6 +261,7 @@ func (h *Handler) buildAccountResponse(
 		AntigravityAPI:               isAntigravityAccount,
 		ClaudeAPI:                    isClaudeAccount,
 		ExcelBPSEnabled:              row.GetCredentialBool(auth.ExcelBPSCredentialKey),
+		ExcelBPSOptOut:               row.GetCredentialBool(auth.ExcelBPSOptOutCredentialKey),
 		ClaudeAuthKind:               claudeAuthKindForRow(row, isClaudeAccount),
 		ClaudeBaseURL:                row.GetCredential(auth.ClaudeBaseURLCredentialKey),
 		AntigravityAuthKind:          antigravityAuthKind,
@@ -291,6 +294,7 @@ func (h *Handler) buildAccountResponse(
 		ClaudeVersionPolicyOverride:  claudeVersionPolicyOverride,
 		ClaudeClientVersionOverride:  claudeClientVersionOverride,
 		Timezone:                     accountTimezone,
+		AccountHref:                  strings.TrimSpace(row.GetCredential(auth.AccountHrefCredentialKey)),
 		Sub2UpstreamRateProbeEnabled: row.GetCredentialBool("sub2_upstream_rate_probe_enabled"),
 		Sub2UpstreamRateProbeIntervalMinutes: func() int64 {
 			if minutes, ok := row.GetCredentialInt64("sub2_upstream_rate_probe_interval_minutes"); ok && (minutes == 5 || minutes == 10 || minutes == 20 || minutes == 30) {
@@ -299,7 +303,8 @@ func (h *Handler) buildAccountResponse(
 			return 5
 		}(),
 		Sub2UpstreamAccount:        row.GetCredentialBool("sub2_upstream_account") || (isOpenAIResponsesAccount && isExternalResponsesUpstream(baseURL)),
-		Sub2UpstreamRateMultiplier: credentialFloat(row.GetCredential("sub2_upstream_rate_multiplier")),
+		Sub2UpstreamRateMultiplier: sub2RateMultiplier,
+		Sub2UpstreamRateAvailable:  sub2RateAvailable,
 		Sub2UpstreamRateProbeAt:    strings.TrimSpace(row.GetCredential("sub2_upstream_rate_probe_at")),
 		Sub2UpstreamRateProbeError: strings.TrimSpace(row.GetCredential("sub2_upstream_rate_probe_error")),
 		CustomHeaders:              customHeaders,
@@ -349,6 +354,10 @@ func (h *Handler) buildAccountResponse(
 		}
 		resp.UsageLimitOverride = runtimeAccount.GetIgnoreUsageLimitStatusOverride()
 		resp.UsageLimitEffective = runtimeAccount.IgnoresUsageLimitStatus()
+		resp.ExcelBPSEffective = runtimeAccount.IsExcelBPSEnabled()
+		if resp.ExcelBPSEffective {
+			resp.ExcelBPSPause = excelBPSPauseForAccount(row.ID)
+		}
 		if isGrokAccount {
 			if snap, hasSnap := runtimeAccount.GetGrokRateLimitSnapshot(); hasSnap {
 				resp.GrokRateLimit = &snap

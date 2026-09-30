@@ -49,8 +49,66 @@ func TestCalculateSub2UpstreamCostLongContextIncludesCacheTokens(t *testing.T) {
 	}
 }
 
+func TestCalculateSub2UpstreamCostUsesStrictLongContextBoundary(t *testing.T) {
+	got, ok := CalculateSub2UpstreamCost(272_000, 1, 0, 0, 0, "gpt-6-astra", "", 1)
+	if !ok || got.LongContext {
+		t.Fatalf("exact threshold must remain short context, got ok=%v result=%#v", ok, got)
+	}
+}
+
+func TestCalculateSub2UpstreamCostSupportsCurrentCodexModels(t *testing.T) {
+	for _, model := range []string{"gpt-5.2", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro"} {
+		if _, ok := CalculateSub2UpstreamCost(1_000, 1_000, 0, 0, 0, model, "", 1); !ok {
+			t.Fatalf("model %q should have Sub2API fallback pricing", model)
+		}
+	}
+}
+
+func TestCalculateSub2UpstreamCostFallsBackWhenTierHasNoPrice(t *testing.T) {
+	got, ok := CalculateSub2UpstreamCost(1_000, 1_000, 0, 0, 0, "gpt-5.4-nano", "priority", 1)
+	if !ok || absFloat(got.InputCost-.0004) > 1e-12 || absFloat(got.OutputCost-.0025) > 1e-12 {
+		t.Fatalf("missing priority price should use standard price times 2, got ok=%v result=%#v", ok, got)
+	}
+}
+
+func TestCalculateSub2UpstreamCostAcceptsZeroMultiplier(t *testing.T) {
+	got, ok := CalculateSub2UpstreamCost(1_000, 1_000, 0, 0, 0, "gpt-5.4-nano", "", 0)
+	if !ok || got.TotalCost != 0 || got.RateMultiplier != 0 {
+		t.Fatalf("zero is a valid observed free multiplier, got ok=%v result=%#v", ok, got)
+	}
+}
+
+func TestCalculateSub2UpstreamCostUsesCurrentCodexModelTiers(t *testing.T) {
+	tests := []struct {
+		model, tier   string
+		input, output float64
+	}{
+		{"gpt-5.3-codex", "", 1.5, 12},
+		{"gpt-5.3-codex", "priority", 3, 24},
+		{"gpt-5.4-mini", "priority", 1.5, 9},
+		{"gpt-5.4-mini", "flex", .375, 2.25},
+		{"gpt-5.4-nano", "flex", .1, .625},
+	}
+	for _, tt := range tests {
+		got, ok := CalculateSub2UpstreamCost(1_000_000, 1_000_000, 0, 0, 0, tt.model, tt.tier, 1)
+		if !ok {
+			t.Fatalf("model=%q tier=%q should have pricing", tt.model, tt.tier)
+		}
+		if got.InputPricePerMToken != tt.input || got.OutputPricePerMToken != tt.output {
+			t.Fatalf("model=%q tier=%q prices=%v/%v, want %v/%v", tt.model, tt.tier, got.InputPricePerMToken, got.OutputPricePerMToken, tt.input, tt.output)
+		}
+	}
+}
+
+func absFloat(value float64) float64 {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
 func TestCalculateSub2UpstreamCostRequiresProbeMultiplier(t *testing.T) {
-	if _, ok := CalculateSub2UpstreamCost(1, 1, 0, 0, 0, "gpt-5.6-luna", "", 0); ok {
-		t.Fatal("probe failure must not be treated as 1x")
+	if _, ok := CalculateSub2UpstreamCost(1, 1, 0, 0, 0, "gpt-5.6-luna", "", -1); ok {
+		t.Fatal("negative multiplier must be rejected")
 	}
 }

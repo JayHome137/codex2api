@@ -4,6 +4,18 @@ export type UpstreamChannel = 'codex' | 'grok' | 'antigravity' | 'claude'
 
 export type ChannelMonitorStatus = 'unknown' | 'operational' | 'degraded' | 'failed'
 
+/** Excel Basispoints route health (automatic 403 pause / 429 cooldown). */
+export interface ExcelBpsPauseView {
+  scope?: 'account' | 'models'
+  reason?: 'forbidden' | 'model_access' | string
+  models?: string[]
+  paused_at?: string
+  last_probe_at?: string
+  next_probe_at?: string
+  failures?: number
+  rate_limited_until?: string
+}
+
 export interface ChannelMonitorConfig {
   account_id: number
   enabled: boolean
@@ -348,6 +360,10 @@ export interface AccountRow {
   claude_base_url?: string
   antigravity_auth_kind?: 'oauth' | 'api_key' | string
   agent_identity?: boolean
+  openai_excel_bps?: boolean
+  openai_excel_bps_opt_out?: boolean
+  openai_excel_bps_effective?: boolean
+  bps_pause?: ExcelBpsPauseView
   grok_auth_kind?: string
   /** Safe, allowlisted User-Agent observed/generated for Claude upstream calls. */
   claude_user_agent?: string
@@ -389,11 +405,13 @@ export interface AccountRow {
   /** True once the OAuth usage probe has run for this row (even with no windows). */
   claude_usage_windows_probed?: boolean
   timezone?: string
+  account_href?: string
   custom_headers?: Record<string, string> | null
   sub2_upstream_rate_probe_enabled?: boolean
   sub2_upstream_rate_probe_interval_minutes?: number
   sub2_upstream_account?: boolean
   sub2_upstream_rate_multiplier?: number
+  sub2_upstream_rate_available?: boolean
   sub2_upstream_rate_probe_at?: string
   sub2_upstream_rate_probe_error?: string
   health_tier?: string
@@ -586,6 +604,8 @@ export interface AccountLiveStateResponse {
   accounts: Record<string, {
     active_requests: number
     occupied_requests: number
+    dynamic_concurrency_limit?: number
+    base_concurrency_effective?: number
   }>
   session_slot_buffer_enabled: boolean
 }
@@ -633,7 +653,7 @@ export interface AccountsPageParams {
   proxyFilter?: 'all' | 'unbound' | 'this' | 'other'
   /** 订阅状态筛选(Codex 渠道),值见 SUBSCRIPTION_FILTER_OPTIONS。 */
   subscription?: SubscriptionFilter
-  sort?: 'requests' | 'today' | 'usage' | 'created_at' | 'updated_at' | 'scheduler_priority' | 'group' | 'risk' | 'dispatch_score' | 'latency_penalty' | 'unauthorized'
+  sort?: 'requests' | 'today' | 'usage' | 'created_at' | 'updated_at' | 'scheduler_priority' | 'group' | 'risk' | 'dispatch_score' | 'latency_penalty' | 'unauthorized' | 'id'
   order?: 'asc' | 'desc'
 }
 
@@ -1529,6 +1549,9 @@ export interface UpdateAccountSchedulerRequest {
   claude_version_policy?: 'passthrough' | 'fixed' | 'minimum' | null
   claude_client_version?: string | null
   timezone?: string | null
+  account_href?: string | null
+  openai_excel_bps?: boolean
+  openai_excel_bps_opt_out?: boolean
   sub2_upstream_rate_probe_enabled?: boolean
   sub2_upstream_rate_probe_interval_minutes?: number
 }
@@ -2122,6 +2145,12 @@ export interface SystemSettings {
   codex_telemetry_enabled: boolean
   codex_telemetry_timing_debug: boolean
   codex_request_compression: boolean
+  codex_basispoints_enabled: boolean
+  codex_basispoints_models: string
+  codex_basispoints_403_auto_pause: boolean
+  codex_basispoints_403_probe_interval_minutes: number
+  codex_basispoints_429_cooldown_seconds: number
+  codex_basispoints_cache_creation_as_input: boolean
   codex_ws_weak_network_mode: boolean
   codex_ws_keepalive_enabled: boolean
   codex_ws_keepalive_interval_sec: number
@@ -3487,8 +3516,11 @@ export interface APIKeyAccountStatsResponse {
   membership_basis: 'current_and_deleted_last_membership'
 }
 
+export type UserBillingMode = 'token' | 'per_image' | 'per_video' | 'per_second'
+
 export interface UsageLog {
-  user_billing_mode?: '' | 'token' | 'per_image'
+  user_billing_mode?: '' | UserBillingMode
+  video_seconds?: number
   image_unit_price?: number
   billed_image_count?: number
   request_id?: string
@@ -3636,8 +3668,9 @@ export interface ChartAggregation {
 }
 
 export interface ModelPricingOverride {
-  user_billing_mode?: 'token' | 'per_image'
+  user_billing_mode?: UserBillingMode
   image_unit_price?: number
+  media_unit_cost?: number
   image_input?: number
   cached_image_input?: number
   source?: string
@@ -3980,7 +4013,9 @@ export interface PublicAPIKeyUsageBreakdown {
 }
 
 export interface PublicAPIKeyUsageLog {
-  user_billing_mode?: '' | 'token' | 'per_image'
+  user_billing_mode?: '' | UserBillingMode
+  channel?: UpstreamChannel | ''
+  video_seconds?: number
   image_unit_price?: number
   billed_image_count?: number
   id: number
@@ -4019,11 +4054,22 @@ export interface PublicAPIKeyUsageLog {
   created_at: ISODateString
 }
 
+/** Request-log filters for the public key usage page; they only narrow recent_logs. */
+export interface PublicAPIKeyUsageLogFilter {
+  model?: string
+  endpoint?: string
+  status?: '' | 'success' | 'error' | '4xx' | '5xx' | '429'
+  stream?: '' | 'stream' | 'sync'
+  channel?: '' | UpstreamChannel
+}
+
 export interface PublicAPIKeyUsageReport {
   summary: PublicAPIKeyUsageSummary
   windows: PublicAPIKeyUsageWindows
   models: PublicAPIKeyUsageBreakdown[]
   endpoints: PublicAPIKeyUsageBreakdown[]
+  log_models?: string[]
+  log_endpoints?: string[]
   recent_logs: PublicAPIKeyUsageLog[]
   recent_logs_total: number
   recent_logs_page: number
@@ -4221,7 +4267,9 @@ export interface CodexUserAgentCatalogKind {
   default_terminal: string
   app_names: CodexUserAgentCatalogOption[] | null
   terminals: CodexUserAgentCatalogOption[] | null
+  reference_terminals?: string[] | null
   platforms: CodexUserAgentCatalogPlatform[] | null
+  reference_platforms?: CodexUserAgentCatalogPlatform[] | null
   version_pairs: CodexUserAgentCatalogVersionPair[] | null
 }
 
