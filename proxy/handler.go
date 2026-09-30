@@ -1575,7 +1575,6 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	populateCompactUsageMetaFromRequest(c, input)
 	populateUltraUsageMetaFromRequest(c, input)
 	markCyberPolicyUsageKind(input)
-	h.populateSub2UpstreamCost(input)
 	input = database.SnapshotUsageLogBilling(input)
 	if deferImageUsage(c, h, input) {
 		return

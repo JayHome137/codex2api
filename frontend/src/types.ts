@@ -411,6 +411,7 @@ export interface AccountRow {
   sub2_upstream_rate_probe_interval_minutes?: number
   sub2_upstream_account?: boolean
   sub2_upstream_rate_multiplier?: number
+  sub2_upstream_rate_available?: boolean
   sub2_upstream_rate_probe_at?: string
   sub2_upstream_rate_probe_error?: string
   health_tier?: string

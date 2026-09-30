@@ -1727,6 +1727,7 @@ type accountResponse struct {
 	Sub2UpstreamRateProbeIntervalMinutes int64                       `json:"sub2_upstream_rate_probe_interval_minutes,omitempty"`
 	Sub2UpstreamAccount                  bool                        `json:"sub2_upstream_account,omitempty"`
 	Sub2UpstreamRateMultiplier           float64                     `json:"sub2_upstream_rate_multiplier,omitempty"`
+	Sub2UpstreamRateAvailable            bool                        `json:"sub2_upstream_rate_available,omitempty"`
 	Sub2UpstreamRateProbeAt              string                      `json:"sub2_upstream_rate_probe_at,omitempty"`
 	Sub2UpstreamRateProbeError           string                      `json:"sub2_upstream_rate_probe_error,omitempty"`
 	CustomHeaders                        map[string]string           `json:"custom_headers,omitempty"`

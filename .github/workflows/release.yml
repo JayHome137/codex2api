@@ -1,9 +1,6 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       release_tag:
@@ -29,12 +26,14 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  # Reusable and manual invocations for the same version share one lane.
+  group: release-${{ inputs.release_tag || github.ref_name || github.run_id }}
   cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       VERSION: ${{ inputs.release_tag || github.ref_name }}
       SOURCE_REF: ${{ inputs.source_ref || inputs.release_tag || github.ref }}
