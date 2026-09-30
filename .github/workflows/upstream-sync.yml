@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: upstream-release-sync
@@ -174,14 +175,36 @@ jobs:
           fi
           main_sha=$(git rev-parse HEAD)
 
-          # Merge the same release into the custom branch. Custom behavior is
-          # protected on conflicts and validated before either branch is
-          # published.
-          git switch --create custom-sync "refs/remotes/origin/${TARGET_BRANCH}"
-          # The custom candidate starts from the remote custom snapshot, so
-          # the later force-with-lease protects that exact ref independently.
+          # Update only the upstream baseline first. The custom branch must be
+          # changed through a reviewable pull request, never by this job.
+          git push --force-with-lease="refs/heads/main:${expected_main_sha}" \
+            origin "${main_sha}:refs/heads/main"
+
+          sync_branch="sync/upstream-${latest_tag}"
+          existing_pr=$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --base "$TARGET_BRANCH" \
+            --head "$sync_branch" \
+            --json number \
+            --jq '.[0].number // empty')
+          if [[ -n "$existing_pr" ]]; then
+            {
+              echo "### Upstream release sync"
+              echo
+              echo "An open synchronization PR already exists; no duplicate was created."
+              echo "- upstream release: \`${latest_tag}\`"
+              echo "- PR: #${existing_pr}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Merge the updated baseline into a temporary branch based on the
+          # current custom branch. Custom behavior is protected on conflicts
+          # and validated before the branch is published and the PR is opened.
+          git switch --create "$sync_branch" "refs/remotes/origin/${TARGET_BRANCH}"
           merge_had_conflicts=false
-          if ! git merge --no-edit --no-commit --no-ff "$upstream_sha"; then
+          if ! git merge --no-edit --no-commit --no-ff "$main_sha"; then
             merge_had_conflicts=true
             while IFS= read -r path; do
               if is_custom_preserve_path "$path"; then
@@ -200,53 +223,7 @@ jobs:
           # Upstream 3.0.2+ contains a second channel billing-rate feature.
           # Keep only the custom Sub2API probe. Validate its key behavior and
           # the mobile tooltip integration before publishing the merged tree.
-          contract_failed=false
-          for path in "${custom_remove_paths[@]}"; do
-            if [[ -e "$path" ]]; then
-              echo "Custom contract violation: forbidden file exists: $path" >&2
-              contract_failed=true
-            fi
-          done
-          if rg -n --hidden --glob '!.git/**' --glob '!CHANGELOG.md' --glob '!docs/**' \
-            --glob '!test-results/**' --glob '!.github/workflows/upstream-sync.yml' \
-            -e 'ChannelMonitorBilling' \
-            -e 'channelMonitorBilling' \
-            -e 'BillingRates' \
-            -e 'probeResponsesBilling' \
-            -e 'RecordChannelMonitorBilling' \
-            -e '/channel-monitors/billing-rates' .; then
-            echo "Custom contract violation: upstream channel billing-rate code is present" >&2
-            contract_failed=true
-          fi
-          required_contracts=(
-            'deploy.sh|https://github.com/JayHome137/codex2api.git'
-            'deploy.sh|REPO_BRANCH="${CODEX2API_REPO_BRANCH:-codex2api-custom}"'
-            'docker-compose.yml|ghcr.io/jayhome137/codex2api:latest'
-            'docker-compose.sqlite.yml|ghcr.io/jayhome137/codex2api:latest'
-            'admin/channel_monitor.go|func (h *Handler) ListChannelMonitors'
-            'admin/channel_monitor.go|func (h *Handler) ProbeChannelMonitorNow'
-            'database/channel_monitor.go|CREATE TABLE IF NOT EXISTS channel_monitor_configs'
-            'database/channel_monitor.go|CREATE TABLE IF NOT EXISTS channel_monitor_checks'
-            'frontend/src/pages/ChannelMonitor.tsx|ChannelMonitor'
-            'proxy/sub2_upstream_probe.go|/v1/sub2api/billing'
-            'proxy/sub2_upstream_probe.go|/v1/usage'
-            'proxy/sub2_upstream_probe.go|parseSub2BillingRateMultiplier'
-            'proxy/handler.go|populateSub2UpstreamCost'
-            'frontend/src/components/ui/tooltip.tsx|function ResponsiveTooltip'
-            'frontend/src/components/ui/tooltip.tsx|ResponsiveTooltip }'
-            'frontend/src/pages/APIKeyUsagePortal.tsx|<ResponsiveTooltip'
-            'frontend/src/pages/Usage.tsx|<ResponsiveTooltip'
-          )
-          for contract in "${required_contracts[@]}"; do
-            IFS='|' read -r path expected <<< "$contract"
-            if ! rg -Fq -- "$expected" "$path"; then
-              echo "Custom contract violation: expected '$expected' in $path" >&2
-              contract_failed=true
-            fi
-          done
-          if [[ "$contract_failed" == true ]]; then
-            exit 1
-          fi
+          bash .github/scripts/verify-custom-contract.sh
 
           printf '%s\n' "$latest_tag" > .upstream-release
           # Stage only tracked changes and the release marker. Untracked
@@ -266,21 +243,47 @@ jobs:
             echo "Custom candidate unexpectedly equals main; refusing to publish." >&2
             exit 1
           fi
-          # Publish both candidates together. If either lease is stale, no
-          # branch is updated and the next scheduled run can retry safely.
-          git push --atomic \
-            --force-with-lease="refs/heads/main:${expected_main_sha}" \
-            --force-with-lease="refs/heads/${TARGET_BRANCH}:${expected_custom_sha}" \
-            origin \
-            "${main_sha}:refs/heads/main" \
-            "${custom_sha}:refs/heads/${TARGET_BRANCH}"
+
+          # Publish only the candidate branch. If a previous failed run left
+          # the same branch behind, update it under a lease before opening a
+          # fresh PR; the protected custom branch remains untouched.
+          existing_sync_sha=$(git ls-remote origin "refs/heads/${sync_branch}" | awk 'NR == 1 { print $1 }')
+          if [[ -n "$existing_sync_sha" ]]; then
+            git push \
+              --force-with-lease="refs/heads/${sync_branch}:${existing_sync_sha}" \
+              origin "${sync_branch}:refs/heads/${sync_branch}"
+          else
+            git push origin "${sync_branch}:refs/heads/${sync_branch}"
+          fi
+
+          pr_body_file=$(mktemp)
+          trap 'rm -f "$scheduler_file" "$pr_body_file"' EXIT
+          cat > "$pr_body_file" <<EOF
+          ## Upstream release sync
+
+          This PR synchronizes upstream release ${latest_tag} into ${TARGET_BRANCH}.
+
+          - The main branch was updated to the upstream release baseline.
+          - Custom multiplier, billing, channel-monitor, mobile-display, and deployment-source behavior was protected.
+          - All other files follow the upstream release.
+          - CI, security scanning, and custom contract checks must pass before merge.
+          - The custom Release is published only after this PR is merged.
+          EOF
+          pr_url=$(gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base "$TARGET_BRANCH" \
+            --head "$sync_branch" \
+            --title "chore: sync upstream release ${latest_tag}" \
+            --body-file "$pr_body_file")
 
           {
             echo "### Upstream release sync"
             echo
-            echo "Synchronized upstream release \`${latest_tag}\` (${upstream_sha})."
-            echo "- main baseline updated"
-            echo "- custom branch updated: \`${custom_sha}\`"
+            echo "Synchronized upstream release \`${latest_tag}\` (${upstream_sha}) into a reviewable PR."
+            echo "- main baseline updated: \`${main_sha}\`"
+            echo "- sync branch: \`${sync_branch}\`"
+            echo "- PR: ${pr_url}"
+            echo "- custom branch remains unchanged until the PR is merged"
             echo "- custom files and workflows were protected on conflicts"
             echo "- multiplier, health-monitor and mobile tooltip contracts passed"
             echo "- upstream channel billing-rate implementation was removed and checked"
