@@ -15,15 +15,16 @@ for path in "${custom_remove_paths[@]}"; do
   fi
 done
 
-if rg -n --hidden --glob '!.git/**' --glob '!CHANGELOG.md' --glob '!docs/**' \
-  --glob '!test-results/**' --glob '!.github/workflows/upstream-sync.yml' \
-  --glob '!.github/scripts/verify-custom-contract.sh' \
+if git grep -n -E \
   -e 'ChannelMonitorBilling' \
   -e 'channelMonitorBilling' \
   -e 'BillingRates' \
   -e 'probeResponsesBilling' \
   -e 'RecordChannelMonitorBilling' \
-  -e '/channel-monitors/billing-rates' .; then
+  -e '/channel-monitors/billing-rates' \
+  -- ':!CHANGELOG.md' ':!docs/**' ':!test-results/**' \
+  ':!.github/workflows/upstream-sync.yml' \
+  ':!.github/scripts/verify-custom-contract.sh'; then
   echo "Custom contract violation: upstream channel billing-rate implementation is present" >&2
   contract_failed=true
 fi
@@ -50,7 +51,7 @@ required_contracts=(
 
 for contract in "${required_contracts[@]}"; do
   IFS='|' read -r path expected <<< "$contract"
-  if ! rg -Fq -- "$expected" "$path"; then
+  if ! grep -Fq -- "$expected" "$path"; then
     echo "Custom contract violation: expected '$expected' in $path" >&2
     contract_failed=true
   fi
