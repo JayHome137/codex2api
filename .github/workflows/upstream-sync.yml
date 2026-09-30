@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: upstream-release-sync
@@ -20,7 +21,7 @@ env:
 jobs:
   sync-release:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Checkout release baseline
         uses: actions/checkout@v5
@@ -40,10 +41,32 @@ jobs:
             "refs/heads/main:refs/remotes/origin/main" \
             "refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
 
-          # These files contain custom multiplier, health-monitor and mobile
-          # cost-detail behavior. Prefer the custom side only when a file has
-          # a real merge conflict; clean upstream changes remain applicable.
+          expected_main_sha=$(git rev-parse refs/remotes/origin/main)
+          expected_custom_sha=$(git rev-parse "refs/remotes/origin/${TARGET_BRANCH}")
+          # Checkout may have resolved main just before a concurrent push.
+          # Align HEAD with the leased remote snapshot before creating the
+          # candidate so the lease cannot permit dropping that commit.
+          git reset --hard "$expected_main_sha"
+          read_marker() {
+            git show "$1:.upstream-release" 2>/dev/null | sed -n '1p' || true
+          }
+          current_main_tag=$(read_marker "$expected_main_sha")
+          current_custom_tag=$(read_marker "$expected_custom_sha")
+
+          # These files contain custom multiplier, health-monitor, mobile
+          # cost-detail behavior and the custom release pipeline. On a real
+          # merge conflict, prefer the custom side for these paths; clean
+          # merges keep unrelated upstream changes in the same file.
           custom_preserve_paths=(
+            .dockerignore
+            deploy.sh
+            docker-compose.yml
+            docker-compose.sqlite.yml
+            .github/workflows/pr-check.yml
+            .github/workflows/release.yml
+            .github/workflows/security-scan.yml
+            .github/workflows/upstream-release.yml
+            .github/workflows/upstream-sync.yml
             admin/account_response_builder.go
             admin/channel_monitor.go
             admin/channel_monitor_probe.go
@@ -98,22 +121,32 @@ jobs:
             | awk -F/ '{print $3}' \
             | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
             | sort -V \
-            | tail -n 1)
-          current_tag=$(sed -n '1p' .upstream-release 2>/dev/null || true)
-
+            | tail -n 1 || true)
           if [[ -z "$latest_tag" ]]; then
             echo "No semver release tag was found upstream."
             exit 0
           fi
-          echo "current_release=${current_tag:-<none>}"
+          echo "current_main_release=${current_main_tag:-<none>}"
+          echo "current_custom_release=${current_custom_tag:-<none>}"
           echo "latest_release=${latest_tag}"
 
-          if [[ "$latest_tag" == "$current_tag" ]]; then
+          marker_ahead_of_latest() {
+            local marker="$1"
+            [[ -z "$marker" ]] && return 1
+            [[ "$marker" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+            [[ "$marker" != "$latest_tag" && "$(printf '%s\n' "$latest_tag" "$marker" | sort -V | tail -n 1)" == "$marker" ]]
+          }
+          if marker_ahead_of_latest "$current_main_tag" || marker_ahead_of_latest "$current_custom_tag"; then
+            echo "A release marker is newer than upstream ${latest_tag}; refusing to roll branches back." >&2
+            exit 1
+          fi
+
+          if [[ "$latest_tag" == "$current_main_tag" && "$latest_tag" == "$current_custom_tag" ]]; then
             {
               echo "### Upstream release sync"
               echo
               echo "No new upstream release is available."
-              echo "- Current release: \`${current_tag}\`"
+              echo "- Current release: \`${latest_tag}\`"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -122,32 +155,62 @@ jobs:
             "refs/tags/${latest_tag}:refs/tags/upstream-${latest_tag}"
           upstream_sha=$(git rev-parse "refs/tags/upstream-${latest_tag}^{commit}")
 
-          # Rebuild main from the upstream release tree while retaining only
-          # this scheduler and the release marker needed for the next run.
+          # Rebuild main from the upstream release tree while retaining the
+          # custom scheduler and release marker needed for the next run.
           scheduler_file=$(mktemp)
+          trap 'rm -f "$scheduler_file"' EXIT
           git show "refs/remotes/origin/${TARGET_BRANCH}:.github/workflows/upstream-sync.yml" > "$scheduler_file"
           git read-tree --reset -u "$upstream_sha"
           mkdir -p .github/workflows
           cp "$scheduler_file" .github/workflows/upstream-sync.yml
           printf '%s\n' "$latest_tag" > .upstream-release
-          rm -f "$scheduler_file"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "chore: sync upstream release ${latest_tag}"
-          git push origin HEAD:refs/heads/main
+          # Stage only the rebuilt tracked tree and the two intentional files.
+          # In particular, do not include untracked local test artifacts.
+          git add -u
+          git add .github/workflows/upstream-sync.yml .upstream-release
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: sync upstream release ${latest_tag}"
+          fi
+          main_sha=$(git rev-parse HEAD)
 
-          # Merge the same release into the custom branch. Custom behavior is
-          # protected on conflicts and validated after every merge.
-          git switch --create custom-sync "refs/remotes/origin/${TARGET_BRANCH}"
+          # Update only the upstream baseline first. The custom branch must be
+          # changed through a reviewable pull request, never by this job.
+          git push --force-with-lease="refs/heads/main:${expected_main_sha}" \
+            origin "${main_sha}:refs/heads/main"
+
+          sync_branch="sync/upstream-${latest_tag}"
+          existing_pr=$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --base "$TARGET_BRANCH" \
+            --head "$sync_branch" \
+            --json number \
+            --jq '.[0].number // empty')
+          if [[ -n "$existing_pr" ]]; then
+            {
+              echo "### Upstream release sync"
+              echo
+              echo "An open synchronization PR already exists; no duplicate was created."
+              echo "- upstream release: \`${latest_tag}\`"
+              echo "- PR: #${existing_pr}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Merge the updated baseline into a temporary branch based on the
+          # current custom branch. Custom behavior is protected on conflicts
+          # and validated before the branch is published and the PR is opened.
+          git switch --create "$sync_branch" "refs/remotes/origin/${TARGET_BRANCH}"
           merge_had_conflicts=false
-          if ! git merge --no-edit --no-commit --no-ff "$upstream_sha"; then
+          if ! git merge --no-edit --no-commit --no-ff "$main_sha"; then
             merge_had_conflicts=true
             while IFS= read -r path; do
               if is_custom_preserve_path "$path"; then
-                git checkout --ours -- "$path"
+                git checkout --ours -- "$path" 2>/dev/null || git rm -f --ignore-unmatch -- "$path"
               else
-                git checkout --theirs -- "$path"
+                git checkout --theirs -- "$path" 2>/dev/null || git rm -f --ignore-unmatch -- "$path"
               fi
               git add -A -- "$path"
             done < <(git diff --name-only --diff-filter=U)
@@ -160,52 +223,13 @@ jobs:
           # Upstream 3.0.2+ contains a second channel billing-rate feature.
           # Keep only the custom Sub2API probe. Validate its key behavior and
           # the mobile tooltip integration before publishing the merged tree.
-          contract_failed=false
-          for path in "${custom_remove_paths[@]}"; do
-            if [[ -e "$path" ]]; then
-              echo "Custom contract violation: forbidden file exists: $path" >&2
-              contract_failed=true
-            fi
-          done
-          if rg -n --hidden --glob '!.git/**' --glob '!CHANGELOG.md' --glob '!docs/**' \
-            --glob '!test-results/**' --glob '!.github/workflows/upstream-sync.yml' \
-            -e 'ChannelMonitorBilling' \
-            -e 'channelMonitorBilling' \
-            -e 'BillingRates' \
-            -e 'probeResponsesBilling' \
-            -e 'RecordChannelMonitorBilling' \
-            -e '/channel-monitors/billing-rates' .; then
-            echo "Custom contract violation: upstream channel billing-rate code is present" >&2
-            contract_failed=true
-          fi
-          required_contracts=(
-            'admin/channel_monitor.go|func (h *Handler) ListChannelMonitors'
-            'admin/channel_monitor.go|func (h *Handler) ProbeChannelMonitorNow'
-            'database/channel_monitor.go|CREATE TABLE IF NOT EXISTS channel_monitor_configs'
-            'database/channel_monitor.go|CREATE TABLE IF NOT EXISTS channel_monitor_checks'
-            'frontend/src/pages/ChannelMonitor.tsx|ChannelMonitor'
-            'proxy/sub2_upstream_probe.go|/v1/sub2api/billing'
-            'proxy/sub2_upstream_probe.go|/v1/usage'
-            'proxy/sub2_upstream_probe.go|parseSub2BillingRateMultiplier'
-            'proxy/handler.go|populateSub2UpstreamCost'
-            'frontend/src/components/ui/tooltip.tsx|function ResponsiveTooltip'
-            'frontend/src/components/ui/tooltip.tsx|ResponsiveTooltip }'
-            'frontend/src/pages/APIKeyUsagePortal.tsx|<ResponsiveTooltip'
-            'frontend/src/pages/Usage.tsx|<ResponsiveTooltip'
-          )
-          for contract in "${required_contracts[@]}"; do
-            IFS='|' read -r path expected <<< "$contract"
-            if ! rg -Fq -- "$expected" "$path"; then
-              echo "Custom contract violation: expected '$expected' in $path" >&2
-              contract_failed=true
-            fi
-          done
-          if [[ "$contract_failed" == true ]]; then
-            exit 1
-          fi
+          bash .github/scripts/verify-custom-contract.sh
 
           printf '%s\n' "$latest_tag" > .upstream-release
-          git add -A
+          # Stage only tracked changes and the release marker. Untracked
+          # build/test output is intentionally left outside the candidate.
+          git add -u
+          git add .upstream-release
           if ! git diff --cached --quiet; then
             if [[ "$merge_had_conflicts" == true ]]; then
               git commit -m "chore: sync upstream release ${latest_tag} preserving custom billing"
@@ -215,17 +239,52 @@ jobs:
           fi
 
           custom_sha=$(git rev-parse HEAD)
-          expected_custom_sha=$(git rev-parse "refs/remotes/origin/${TARGET_BRANCH}")
-          git push --force-with-lease="refs/heads/${TARGET_BRANCH}:${expected_custom_sha}" \
-            origin "${custom_sha}:refs/heads/${TARGET_BRANCH}"
+          if [[ "$custom_sha" == "$main_sha" ]]; then
+            echo "Custom candidate unexpectedly equals main; refusing to publish." >&2
+            exit 1
+          fi
+
+          # Publish only the candidate branch. If a previous failed run left
+          # the same branch behind, update it under a lease before opening a
+          # fresh PR; the protected custom branch remains untouched.
+          existing_sync_sha=$(git ls-remote origin "refs/heads/${sync_branch}" | awk 'NR == 1 { print $1 }')
+          if [[ -n "$existing_sync_sha" ]]; then
+            git push \
+              --force-with-lease="refs/heads/${sync_branch}:${existing_sync_sha}" \
+              origin "${sync_branch}:refs/heads/${sync_branch}"
+          else
+            git push origin "${sync_branch}:refs/heads/${sync_branch}"
+          fi
+
+          pr_body_file=$(mktemp)
+          trap 'rm -f "$scheduler_file" "$pr_body_file"' EXIT
+          cat > "$pr_body_file" <<EOF
+          ## Upstream release sync
+
+          This PR synchronizes upstream release ${latest_tag} into ${TARGET_BRANCH}.
+
+          - The main branch was updated to the upstream release baseline.
+          - Custom multiplier, billing, channel-monitor, mobile-display, and deployment-source behavior was protected.
+          - All other files follow the upstream release.
+          - CI, security scanning, and custom contract checks must pass before merge.
+          - The custom Release is published only after this PR is merged.
+          EOF
+          pr_url=$(gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base "$TARGET_BRANCH" \
+            --head "$sync_branch" \
+            --title "chore: sync upstream release ${latest_tag}" \
+            --body-file "$pr_body_file")
 
           {
             echo "### Upstream release sync"
             echo
-            echo "Synchronized upstream release \`${latest_tag}\` (${upstream_sha})."
-            echo "- main baseline updated"
-            echo "- custom branch updated: \`${custom_sha}\`"
-            echo "- custom paths were preferred only on merge conflicts"
+            echo "Synchronized upstream release \`${latest_tag}\` (${upstream_sha}) into a reviewable PR."
+            echo "- main baseline updated: \`${main_sha}\`"
+            echo "- sync branch: \`${sync_branch}\`"
+            echo "- PR: ${pr_url}"
+            echo "- custom branch remains unchanged until the PR is merged"
+            echo "- custom files and workflows were protected on conflicts"
             echo "- multiplier, health-monitor and mobile tooltip contracts passed"
             echo "- upstream channel billing-rate implementation was removed and checked"
           } >> "$GITHUB_STEP_SUMMARY"
