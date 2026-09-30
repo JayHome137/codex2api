@@ -275,6 +275,7 @@ jobs:
             --head "$sync_branch" \
             --title "chore: sync upstream release ${latest_tag}" \
             --body-file "$pr_body_file")
+          gh pr merge "$pr_url" --auto --merge --delete-branch
 
           {
             echo "### Upstream release sync"
@@ -283,6 +284,7 @@ jobs:
             echo "- main baseline updated: \`${main_sha}\`"
             echo "- sync branch: \`${sync_branch}\`"
             echo "- PR: ${pr_url}"
+            echo "- auto-merge enabled; merge waits for required checks"
             echo "- custom branch remains unchanged until the PR is merged"
             echo "- custom files and workflows were protected on conflicts"
             echo "- multiplier, health-monitor and mobile tooltip contracts passed"
