@@ -10,11 +10,11 @@ on:
     branches:
       - main
       - codex/**
+      - codex2api-custom
     paths-ignore:
       - 'docs/**'
       - 'README.md'
       - 'CHANGELOG.md'
-
 permissions:
   contents: read
 
@@ -23,6 +23,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  custom-contract:
+    if: github.base_ref == 'codex2api-custom' || github.ref_name == 'codex2api-custom'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Verify custom contract
+        run: bash .github/scripts/verify-custom-contract.sh
+
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 8
