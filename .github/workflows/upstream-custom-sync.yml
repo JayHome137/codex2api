@@ -152,8 +152,6 @@ jobs:
               fi
               if [[ -e "$path" || -L "$path" ]]; then
                 git add -- "$path"
-              else
-                git add -u -- "$path"
               fi
             done
           fi
