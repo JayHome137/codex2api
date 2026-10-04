@@ -137,6 +137,12 @@ jobs:
           merge_had_conflicts=false
           if ! git merge --no-edit --no-commit --no-ff "$main_sha"; then
             merge_had_conflicts=true
+            # A conflicted merge can leave this runner's index lock behind
+            # before the conflict-resolution loop starts. No other Git process
+            # runs in this step, so remove only that stale lock before writes.
+            if [[ -f .git/index.lock ]]; then
+              rm -f .git/index.lock
+            fi
             while IFS= read -r path; do
               if is_custom_preserve_path "$path"; then
                 git checkout --ours -- "$path" 2>/dev/null || git rm -f --ignore-unmatch -- "$path"
