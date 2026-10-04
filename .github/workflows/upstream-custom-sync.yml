@@ -143,14 +143,15 @@ jobs:
             if [[ -f .git/index.lock ]]; then
               rm -f .git/index.lock
             fi
-            while IFS= read -r path; do
+            mapfile -t conflicted_paths < <(git diff --name-only --diff-filter=U)
+            for path in "${conflicted_paths[@]}"; do
               if is_custom_preserve_path "$path"; then
                 git checkout --ours -- "$path" 2>/dev/null || git rm -f --ignore-unmatch -- "$path"
               else
                 git checkout --theirs -- "$path" 2>/dev/null || git rm -f --ignore-unmatch -- "$path"
               fi
               git add -A -- "$path"
-            done < <(git diff --name-only --diff-filter=U)
+            done
           fi
 
           for path in "${custom_remove_paths[@]}"; do
