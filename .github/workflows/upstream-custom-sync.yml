@@ -1,0 +1,219 @@
+name: Merge Upstream Baseline Into Custom
+
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-custom-sync
+  cancel-in-progress: true
+
+env:
+  TARGET_BRANCH: codex2api-custom
+
+jobs:
+  prepare-custom-pr:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout main baseline
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Create custom synchronization PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags origin \
+            "refs/heads/main:refs/remotes/origin/main" \
+            "refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+
+          main_sha=$(git rev-parse refs/remotes/origin/main)
+          expected_custom_sha=$(git rev-parse "refs/remotes/origin/${TARGET_BRANCH}")
+          git reset --hard "$main_sha"
+
+          read_marker() {
+            git show "$1:.upstream-release" 2>/dev/null | sed -n '1p' || true
+          }
+          main_tag=$(read_marker "$main_sha")
+          custom_tag=$(read_marker "$expected_custom_sha")
+          if [[ ! "$main_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "main does not declare a valid upstream release marker; nothing to merge."
+            exit 0
+          fi
+          echo "main_release=${main_tag}"
+          echo "custom_release=${custom_tag:-<none>}"
+
+          if [[ "$main_tag" == "$custom_tag" ]]; then
+            {
+              echo "### Custom synchronization"
+              echo
+              echo "The custom branch already contains ${main_tag}."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # On conflicts, retain these custom multiplier, billing,
+          # health-monitor, mobile-display and deployment-source paths.
+          custom_preserve_paths=(
+            .dockerignore
+            deploy.sh
+            docker-compose.yml
+            docker-compose.sqlite.yml
+            .github/workflows/pr-check.yml
+            .github/workflows/release.yml
+            .github/workflows/security-scan.yml
+            .github/workflows/upstream-release.yml
+            .github/workflows/upstream-sync.yml
+            .github/workflows/upstream-custom-sync.yml
+            admin/account_response_builder.go
+            admin/channel_monitor.go
+            admin/channel_monitor_probe.go
+            admin/channel_monitor_probe_test.go
+            admin/handler.go
+            admin/sub2_upstream_rate.go
+            admin/system_update.go
+            database/api_key_usage.go
+            database/billing.go
+            database/billing_test.go
+            database/channel_monitor.go
+            database/channel_monitor_test.go
+            database/image_user_billing_test.go
+            database/postgres.go
+            database/sqlite.go
+            database/sub2_upstream_billing.go
+            database/sub2_upstream_billing_test.go
+            database/usage_compaction_history_test.go
+            docs/sub2api-upstream-billing-phase1.md
+            frontend/src/api.ts
+            frontend/src/components/AccountQuickConfigSheet.tsx
+            frontend/src/components/ChannelMonitorConfigDialog.tsx
+            frontend/src/components/Layout.tsx
+            frontend/src/components/ui/tooltip.tsx
+            frontend/src/lib/accountQuickConfig.ts
+            frontend/src/locales/en.json
+            frontend/src/locales/zh.json
+            frontend/src/pages/APIKeyUsagePortal.tsx
+            frontend/src/pages/Accounts.tsx
+            frontend/src/pages/ChannelMonitor.tsx
+            frontend/src/pages/Usage.tsx
+            frontend/src/types.ts
+            proxy/handler.go
+            proxy/sub2_upstream_probe.go
+            proxy/sub2_upstream_probe_test.go
+          )
+          custom_remove_paths=(
+            frontend/src/lib/channelMonitorBilling.ts
+            frontend/src/lib/channelMonitorBilling.test.mjs
+          )
+
+          is_custom_preserve_path() {
+            local candidate="$1"
+            local path
+            for path in "${custom_preserve_paths[@]}"; do
+              [[ "$candidate" == "$path" ]] && return 0
+            done
+            return 1
+          }
+
+          sync_branch="sync/upstream-${main_tag}"
+          git switch --create "$sync_branch" "refs/remotes/origin/${TARGET_BRANCH}"
+          merge_had_conflicts=false
+          if ! git merge --no-edit --no-commit --no-ff "$main_sha"; then
+            merge_had_conflicts=true
+            while IFS= read -r path; do
+              if is_custom_preserve_path "$path"; then
+                git checkout --ours -- "$path" 2>/dev/null || git rm -f --ignore-unmatch -- "$path"
+              else
+                git checkout --theirs -- "$path" 2>/dev/null || git rm -f --ignore-unmatch -- "$path"
+              fi
+              git add -A -- "$path"
+            done < <(git diff --name-only --diff-filter=U)
+          fi
+
+          for path in "${custom_remove_paths[@]}"; do
+            git rm -f --ignore-unmatch -- "$path"
+          done
+
+          bash .github/scripts/verify-custom-contract.sh
+          printf '%s\n' "$main_tag" > .upstream-release
+          git add -u
+          git add .upstream-release
+          if ! git diff --cached --quiet; then
+            if [[ "$merge_had_conflicts" == true ]]; then
+              git commit -m "chore: sync upstream release ${main_tag} preserving custom billing"
+            else
+              git commit -m "chore: sync upstream release ${main_tag}"
+            fi
+          fi
+
+          custom_sha=$(git rev-parse HEAD)
+          if [[ "$custom_sha" == "$main_sha" ]]; then
+            echo "Custom candidate unexpectedly equals main; refusing to publish." >&2
+            exit 1
+          fi
+
+          existing_pr=$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --base "$TARGET_BRANCH" \
+            --head "$sync_branch" \
+            --json number \
+            --jq '.[0].number // empty')
+          existing_sync_sha=$(git ls-remote origin "refs/heads/${sync_branch}" | awk 'NR == 1 { print $1 }')
+          if [[ -n "$existing_sync_sha" ]]; then
+            git push \
+              --force-with-lease="refs/heads/${sync_branch}:${existing_sync_sha}" \
+              origin "${sync_branch}:refs/heads/${sync_branch}"
+          else
+            git push origin "${sync_branch}:refs/heads/${sync_branch}"
+          fi
+
+          if [[ -z "$existing_pr" ]]; then
+            pr_body_file=$(mktemp)
+            trap 'rm -f "$pr_body_file"' EXIT
+            cat > "$pr_body_file" <<EOF
+          ## Upstream release sync
+
+          This PR merges the validated main baseline for ${main_tag} into ${TARGET_BRANCH}.
+
+          - Custom multiplier, billing, channel-monitor, mobile-display, and deployment-source behavior is protected on conflicts.
+          - All other files follow the already validated main baseline.
+          - The custom contract, CI, and security checks must pass before merge.
+          - The custom Release is published only after this PR is merged.
+          EOF
+            pr_url=$(gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base "$TARGET_BRANCH" \
+              --head "$sync_branch" \
+              --title "chore: sync upstream release ${main_tag}" \
+              --body-file "$pr_body_file")
+            gh pr merge "$pr_url" --auto --merge --delete-branch
+          else
+            pr_url="https://github.com/${GITHUB_REPOSITORY}/pull/${existing_pr}"
+            gh pr merge "$pr_url" --auto --merge --delete-branch
+          fi
+
+          {
+            echo "### Custom synchronization"
+            echo
+            echo "Prepared ${main_tag} as a protected custom PR."
+            echo "- sync branch: \`${sync_branch}\`"
+            echo "- PR: ${pr_url}"
+            echo "- custom branch remains unchanged until required checks pass"
+            echo "- custom behavior was protected on merge conflicts"
+          } >> "$GITHUB_STEP_SUMMARY"
