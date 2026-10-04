@@ -150,7 +150,11 @@ jobs:
               else
                 git checkout --theirs -- "$path" 2>/dev/null || git rm -f --ignore-unmatch -- "$path"
               fi
-              git add -A -- "$path"
+              if [[ -e "$path" || -L "$path" ]]; then
+                git add -- "$path"
+              else
+                git add -u -- "$path"
+              fi
             done
           fi
 
