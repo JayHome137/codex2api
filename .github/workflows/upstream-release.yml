@@ -78,9 +78,62 @@ jobs:
 
           git fetch --no-tags upstream "refs/tags/${upstream_tag}:refs/tags/upstream-${upstream_tag}"
           upstream_tag_sha=$(git rev-parse "refs/tags/upstream-${upstream_tag}^{commit}")
-          if ! git merge-base --is-ancestor "$upstream_tag_sha" "$SOURCE_SHA"; then
-            echo "The validated custom commit does not contain the upstream release ${upstream_tag}; no release will be promoted."
-            exit 0
+
+          # The upstream repository and this fork have independent histories.
+          # Validate the synchronized tree instead of requiring the upstream
+          # commit to be an ancestor of the custom commit. These paths are the
+          # maintained fork contract; every other path must match the upstream
+          # release tree exactly.
+          custom_content_paths=(
+            .dockerignore
+            .github/**
+            .upstream-release
+            deploy.sh
+            docker-compose.yml
+            docker-compose.sqlite.yml
+            admin/account_response_builder.go
+            admin/channel_monitor*
+            admin/handler.go
+            admin/sub2_upstream_rate.go
+            admin/system_update.go
+            database/api_key_usage.go
+            database/billing*
+            database/channel_monitor*
+            database/image_user_billing_test.go
+            database/postgres.go
+            database/sqlite.go
+            database/sub2_upstream_billing*
+            database/usage_compaction_history_test.go
+            docs/sub2api-upstream-billing-phase1.md
+            frontend/src/api.ts
+            frontend/src/components/AccountQuickConfigSheet.tsx
+            frontend/src/components/ChannelMonitorConfigDialog.tsx
+            frontend/src/components/Layout.tsx
+            frontend/src/components/ui/tooltip.tsx
+            frontend/src/lib/accountQuickConfig.ts
+            frontend/src/lib/channelMonitorBilling*
+            frontend/src/locales/en.json
+            frontend/src/locales/zh.json
+            frontend/src/pages/APIKeyUsagePortal.tsx
+            frontend/src/pages/Accounts.tsx
+            frontend/src/pages/ChannelMonitor.tsx
+            frontend/src/pages/Usage.tsx
+            frontend/src/types.ts
+            proxy/handler.go
+            proxy/official_model_pricing*
+            proxy/sub2_upstream_probe*
+          )
+          compare_pathspecs=(.)
+          for path in "${custom_content_paths[@]}"; do
+            compare_pathspecs+=(":(exclude)${path}")
+          done
+          mapfile -t unexpected_paths < <(
+            git diff --name-only "$upstream_tag_sha" "$SOURCE_SHA" -- "${compare_pathspecs[@]}"
+          )
+          if (( ${#unexpected_paths[@]} > 0 )); then
+            echo "The validated custom commit differs from upstream ${upstream_tag} outside the maintained custom contract:" >&2
+            printf ' - %s\n' "${unexpected_paths[@]}" >&2
+            exit 1
           fi
 
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
