@@ -260,8 +260,18 @@ func (h *Handler) buildAccountResponse(
 		GrokAPI:                      isGrokAccount,
 		AntigravityAPI:               isAntigravityAccount,
 		ClaudeAPI:                    isClaudeAccount,
-		ExcelBPSEnabled:              row.GetCredentialBool(auth.ExcelBPSCredentialKey),
-		ExcelBPSOptOut:               row.GetCredentialBool(auth.ExcelBPSOptOutCredentialKey),
+		Sub2UpstreamRateProbeEnabled: row.GetCredentialBool("sub2_upstream_rate_probe_enabled"),
+		Sub2UpstreamRateProbeIntervalMinutes: func() int64 {
+			if minutes, ok := row.GetCredentialInt64("sub2_upstream_rate_probe_interval_minutes"); ok && (minutes == 5 || minutes == 10 || minutes == 20 || minutes == 30) {
+				return minutes
+			}
+			return 5
+		}(),
+		Sub2UpstreamAccount:          row.GetCredentialBool("sub2_upstream_account") || (isOpenAIResponsesAccount && isExternalResponsesUpstream(baseURL)),
+		Sub2UpstreamRateMultiplier:   sub2RateMultiplier,
+		Sub2UpstreamRateAvailable:    sub2RateAvailable,
+		Sub2UpstreamRateProbeAt:      strings.TrimSpace(row.GetCredential("sub2_upstream_rate_probe_at")),
+		Sub2UpstreamRateProbeError:   strings.TrimSpace(row.GetCredential("sub2_upstream_rate_probe_error")),
 		ClaudeAuthKind:               claudeAuthKindForRow(row, isClaudeAccount),
 		ClaudeBaseURL:                row.GetCredential(auth.ClaudeBaseURLCredentialKey),
 		AntigravityAuthKind:          antigravityAuthKind,
@@ -295,39 +305,27 @@ func (h *Handler) buildAccountResponse(
 		ClaudeClientVersionOverride:  claudeClientVersionOverride,
 		Timezone:                     accountTimezone,
 		AccountHref:                  strings.TrimSpace(row.GetCredential(auth.AccountHrefCredentialKey)),
-		Sub2UpstreamRateProbeEnabled: row.GetCredentialBool("sub2_upstream_rate_probe_enabled"),
-		Sub2UpstreamRateProbeIntervalMinutes: func() int64 {
-			if minutes, ok := row.GetCredentialInt64("sub2_upstream_rate_probe_interval_minutes"); ok && (minutes == 5 || minutes == 10 || minutes == 20 || minutes == 30) {
-				return minutes
-			}
-			return 5
-		}(),
-		Sub2UpstreamAccount:        row.GetCredentialBool("sub2_upstream_account") || (isOpenAIResponsesAccount && isExternalResponsesUpstream(baseURL)),
-		Sub2UpstreamRateMultiplier: sub2RateMultiplier,
-		Sub2UpstreamRateAvailable:  sub2RateAvailable,
-		Sub2UpstreamRateProbeAt:    strings.TrimSpace(row.GetCredential("sub2_upstream_rate_probe_at")),
-		Sub2UpstreamRateProbeError: strings.TrimSpace(row.GetCredential("sub2_upstream_rate_probe_error")),
-		CustomHeaders:              customHeaders,
-		UpstreamRequestIDHeader:    row.GetCredential(auth.UpstreamRequestIDHeaderCredentialKey),
-		ProxyURL:                   row.ProxyURL,
-		Enabled:                    row.Enabled,
-		Locked:                     row.Locked,
-		AllowedAPIKeyIDs:           allowedAPIKeyIDs,
-		Tags:                       append([]string(nil), row.Tags...),
-		Note:                       row.Note,
-		ScoreBiasOverride:          nullableInt64Pointer(row.ScoreBiasOverride),
-		ScoreBiasEffective:         effectiveScoreBias(planType, row.ScoreBiasOverride),
-		BaseConcurrencyOverride:    nullableInt64Pointer(row.BaseConcurrencyOverride),
-		BaseConcurrencyEffective:   effectiveBaseConcurrency(row.BaseConcurrencyOverride, int64(h.store.GetMaxConcurrency())),
-		CreatedAt:                  row.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:                  row.UpdatedAt.Format(time.RFC3339),
-		CodexUsageUpdatedAt:        row.GetCredential("codex_usage_updated_at"),
-		Codex5HUsageUpdatedAt:      row.GetCredential("codex_5h_usage_updated_at"),
-		ClaudeUsageProbeAt:         row.GetCredential(auth.ClaudeUsageProbeAtCredentialKey),
-		ClaudeUsageProbeError:      row.GetCredential(auth.ClaudeUsageProbeErrorCredentialKey),
-		ClaudeUsageWindows:         parseClaudeUsageWindows(row.GetCredential(auth.ClaudeUsageWindowsCredentialKey)),
-		UsageLimitOverride:         ignoreUsageLimitStatusOverride,
-		UsageLimitEffective:        ignoreUsageLimitStatusEffective,
+		CustomHeaders:                customHeaders,
+		UpstreamRequestIDHeader:      row.GetCredential(auth.UpstreamRequestIDHeaderCredentialKey),
+		ProxyURL:                     row.ProxyURL,
+		Enabled:                      row.Enabled,
+		Locked:                       row.Locked,
+		AllowedAPIKeyIDs:             allowedAPIKeyIDs,
+		Tags:                         append([]string(nil), row.Tags...),
+		Note:                         row.Note,
+		ScoreBiasOverride:            nullableInt64Pointer(row.ScoreBiasOverride),
+		ScoreBiasEffective:           effectiveScoreBias(planType, row.ScoreBiasOverride),
+		BaseConcurrencyOverride:      nullableInt64Pointer(row.BaseConcurrencyOverride),
+		BaseConcurrencyEffective:     effectiveBaseConcurrency(row.BaseConcurrencyOverride, int64(h.store.GetMaxConcurrency())),
+		CreatedAt:                    row.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:                    row.UpdatedAt.Format(time.RFC3339),
+		CodexUsageUpdatedAt:          row.GetCredential("codex_usage_updated_at"),
+		Codex5HUsageUpdatedAt:        row.GetCredential("codex_5h_usage_updated_at"),
+		ClaudeUsageProbeAt:           row.GetCredential(auth.ClaudeUsageProbeAtCredentialKey),
+		ClaudeUsageProbeError:        row.GetCredential(auth.ClaudeUsageProbeErrorCredentialKey),
+		ClaudeUsageWindows:           claudeAccountUsageWindows(row),
+		UsageLimitOverride:           ignoreUsageLimitStatusOverride,
+		UsageLimitEffective:          ignoreUsageLimitStatusEffective,
 	}
 	// 凭据里只要存在 usage 窗口键(哪怕是空数组)就代表 OAuth usage 采样跑过。
 	resp.ClaudeUsageWindowsProbed = strings.TrimSpace(row.GetCredential(auth.ClaudeUsageWindowsCredentialKey)) != ""
@@ -354,10 +352,6 @@ func (h *Handler) buildAccountResponse(
 		}
 		resp.UsageLimitOverride = runtimeAccount.GetIgnoreUsageLimitStatusOverride()
 		resp.UsageLimitEffective = runtimeAccount.IgnoresUsageLimitStatus()
-		resp.ExcelBPSEffective = runtimeAccount.IsExcelBPSEnabled()
-		if resp.ExcelBPSEffective {
-			resp.ExcelBPSPause = excelBPSPauseForAccount(row.ID)
-		}
 		if isGrokAccount {
 			if snap, hasSnap := runtimeAccount.GetGrokRateLimitSnapshot(); hasSnap {
 				resp.GrokRateLimit = &snap
@@ -538,6 +532,33 @@ func (h *Handler) buildAccountResponse(
 		stripAccountDetailFields(&resp)
 	}
 	return resp
+}
+
+// Keep header-only windows when an OAuth probe has no equivalent bucket;
+// when both sources observed the same bucket, display the newer observation.
+func claudeAccountUsageWindows(row *database.AccountRow) []auth.ClaudeUsageWindow {
+	windows := parseClaudeUsageWindows(row.GetCredential(auth.ClaudeUsageWindowsCredentialKey))
+	var header auth.ClaudeHeaderUsageSnapshot
+	if json.Unmarshal([]byte(row.GetCredential(auth.ClaudeHeaderUsageCredentialKey)), &header) != nil {
+		return windows
+	}
+	probedAt, _ := time.Parse(time.RFC3339Nano, row.GetCredential(auth.ClaudeUsageProbeAtCredentialKey))
+	for _, observed := range header.Windows {
+		found := false
+		for i := range windows {
+			if windows[i].Name == observed.Name {
+				found = true
+				if !header.ObservedAt.Before(probedAt) {
+					windows[i] = observed
+				}
+				break
+			}
+		}
+		if !found {
+			windows = append(windows, observed)
+		}
+	}
+	return windows
 }
 
 func parseClaudeUsageWindows(raw string) []auth.ClaudeUsageWindow {
