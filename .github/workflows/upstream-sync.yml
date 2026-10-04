@@ -165,6 +165,32 @@ jobs:
             gh pr merge "$pr_url" --auto --merge --delete-branch
           fi
 
+          merged=false
+          for attempt in $(seq 1 100); do
+            pr_state=$(gh pr view "$pr_url" --json state,mergedAt --jq '.state + " " + (.mergedAt // "")')
+            if [[ "$pr_state" == MERGED* ]]; then
+              merged=true
+              break
+            fi
+            if [[ "$pr_state" == CLOSED* ]]; then
+              echo "The upstream baseline PR closed without merging: ${pr_url}" >&2
+              exit 1
+            fi
+            sleep 15
+          done
+          if [[ "$merged" != true ]]; then
+            echo "Timed out waiting for the upstream baseline PR to merge: ${pr_url}" >&2
+            exit 1
+          fi
+
+          # A bot-created PR merge does not reliably emit pull_request:closed
+          # for the next workflow. workflow_dispatch is an explicit trigger
+          # supported by GITHUB_TOKEN, so dispatch the custom stage after the
+          # protected main merge is confirmed.
+          gh workflow run 'Merge Upstream Baseline Into Custom' \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main
+
           {
             echo "### Upstream baseline sync"
             echo
@@ -172,5 +198,5 @@ jobs:
             echo "- baseline branch: \`${baseline_branch}\`"
             echo "- PR: ${pr_url}"
             echo "- main remains unchanged until the required checks pass"
-            echo "- custom synchronization starts from the main push after merge"
+            echo "- custom synchronization was dispatched after the protected main merge"
           } >> "$GITHUB_STEP_SUMMARY"
