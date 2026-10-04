@@ -27,8 +27,6 @@ export interface QuickConfigAccountSource {
   custom_headers?: Record<string, string> | null;
   tags?: string[] | null;
   group_ids?: number[] | null;
-  openai_excel_bps?: boolean;
-  openai_excel_bps_opt_out?: boolean;
   openai_responses_api?: boolean;
   grok_api?: boolean;
   claude_api?: boolean;
@@ -41,38 +39,6 @@ export interface QuickConfigAccountSource {
   sub2_upstream_rate_available?: boolean;
   sub2_upstream_rate_probe_at?: string;
   sub2_upstream_rate_probe_error?: string;
-}
-
-/** Account-level Excel Basispoints mode: follow the global default, force on, or exclude. */
-export type ExcelBpsMode = "inherit" | "on" | "off";
-
-export function excelBpsModeFromAccount(account: {
-  openai_excel_bps?: boolean;
-  openai_excel_bps_opt_out?: boolean;
-}): ExcelBpsMode {
-  if (account.openai_excel_bps) return "on";
-  if (account.openai_excel_bps_opt_out) return "off";
-  return "inherit";
-}
-
-export function excelBpsFlagsForMode(mode: ExcelBpsMode): {
-  openai_excel_bps: boolean;
-  openai_excel_bps_opt_out: boolean;
-} {
-  return {
-    openai_excel_bps: mode === "on",
-    openai_excel_bps_opt_out: mode === "off",
-  };
-}
-
-export function accountSupportsExcelBps(account: QuickConfigAccountSource): boolean {
-  return !(
-    account.openai_responses_api ||
-    account.grok_api ||
-    account.claude_api ||
-    account.antigravity_api ||
-    account.agent_identity
-  );
 }
 
 export interface QuickConfigFormState {
@@ -89,8 +55,6 @@ export interface QuickConfigFormState {
   customHeadersText: string;
   tags: string[];
   groupIds: number[];
-  excelBpsMode: ExcelBpsMode | null;
-  initialExcelBpsMode: ExcelBpsMode | null;
   sub2UpstreamRateProbeEnabled: boolean;
   sub2UpstreamRateProbeIntervalMinutes: number;
 }
@@ -157,12 +121,7 @@ export function formatCustomHeadersText(
 export function formStateFromAccount(
   account: QuickConfigAccountSource,
 ): QuickConfigFormState {
-  const excelBpsMode = accountSupportsExcelBps(account)
-    ? excelBpsModeFromAccount(account)
-    : null;
   return {
-    excelBpsMode,
-    initialExcelBpsMode: excelBpsMode,
     accountId: account.id,
     upstreamRequestIdHeader: account.upstream_request_id_header ?? "",
     fingerprintMode: normalizeCodexFingerprintMode(account.codex_fingerprint_mode),
@@ -249,15 +208,9 @@ export function buildQuickConfigSavePayload(
     parsedSchedulerPriority = value;
   }
 
-  const excelBpsPatch =
-    form.excelBpsMode != null && form.excelBpsMode !== form.initialExcelBpsMode
-      ? excelBpsFlagsForMode(form.excelBpsMode)
-      : {};
-
   return {
     ok: true,
     payload: {
-      ...excelBpsPatch,
       score_bias_override: form.scoreMode === "custom" ? parsedScoreBias : null,
       base_concurrency_override:
         form.concurrencyMode === "custom" ? parsedBaseConcurrency : null,
