@@ -1,25 +1,48 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing tag to build and publish, for example v3.0.1'
+        required: true
+        type: string
+      source_ref:
+        description: 'Optional commit or ref to build instead of the release tag'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      release_tag:
+        description: 'Release tag to publish, for example v3.0.1'
+        required: true
+        type: string
+      source_ref:
+        description: 'Commit or ref containing the validated source to build'
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  # Reusable and manual invocations for the same version share one lane.
+  group: release-${{ inputs.release_tag || github.ref_name || github.run_id }}
   cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
-      VERSION: ${{ github.ref_name }}
+      VERSION: ${{ inputs.release_tag || github.ref_name }}
+      SOURCE_REF: ${{ inputs.source_ref || inputs.release_tag || github.ref }}
     steps:
-      - name: Checkout
+      - name: Checkout release source
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref || inputs.release_tag || github.ref }}
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -36,7 +59,7 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         env:
-          VITE_APP_VERSION: ${{ github.ref_name }}
+          VITE_APP_VERSION: ${{ inputs.release_tag || github.ref_name }}
         run: |
           npm ci
           npm run build
@@ -89,9 +112,56 @@ jobs:
             sha256sum * > SHA256SUMS.txt
           )
 
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          notes_file="$RUNNER_TEMP/codex2api-release-notes.md"
+          homepage_readme="$RUNNER_TEMP/codex2api-homepage-readme.md"
+          homepage_readme_zh="$RUNNER_TEMP/codex2api-homepage-readme-zh.md"
+          version="$VERSION"
+          previous_tag="$(git tag --sort=-version:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | grep -Fxv "$version" \
+            | head -n 1 || true)"
+
+          git show origin/main:README.md > "$homepage_readme"
+          git show origin/main:README.zh-CN.md > "$homepage_readme_zh"
+
+          awk '
+            /^## Custom maintenance$/ { in_section=1 }
+            in_section && /^## / && $0 != "## Custom maintenance" { exit }
+            in_section { print }
+          ' "$homepage_readme" > "$notes_file"
+
+          printf '\n---\n\n' >> "$notes_file"
+          awk '
+            /^## 自定义维护内容$/ { in_section=1 }
+            in_section && /^## / && $0 != "## 自定义维护内容" { exit }
+            in_section { print }
+          ' "$homepage_readme_zh" >> "$notes_file"
+
+          printf '\n## Custom changes in this release\n\n' >> "$notes_file"
+          custom_commits=""
+          if [[ -n "$previous_tag" ]]; then
+            custom_commits="$(git log --first-parent --format='- %s' \
+              "$previous_tag..$SOURCE_REF" -- \
+              ':!CHANGELOG.md' ':!docs/**' ':!.github/**' \
+              | grep -Ev '^- (Merge pull request|chore: sync upstream release|ci:)' || true)"
+          fi
+          if [[ -n "$custom_commits" ]]; then
+            printf '%s\n' "$custom_commits" >> "$notes_file"
+          else
+            printf '%s\n' '- No additional custom code changes were recorded for this release.' >> "$notes_file"
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          target_commitish: ${{ inputs.source_ref || github.sha }}
+          body_path: ${{ runner.temp }}/codex2api-release-notes.md
           generate_release_notes: true
           files: |
             dist/*.tar.gz
