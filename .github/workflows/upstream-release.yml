@@ -4,10 +4,21 @@ on:
   push:
     branches:
       - codex2api-custom
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Merged commit on codex2api-custom to release
+        required: true
+        type: string
+      pr_number:
+        description: Merged custom-branch PR whose required checks passed
+        required: true
+        type: string
 
 permissions:
   actions: read
   contents: write
+  pull-requests: read
 
 concurrency:
   # A single release lane prevents two custom commits from racing for the
@@ -31,39 +42,84 @@ jobs:
       - name: Checkout validated custom commit
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.source_sha || github.sha }}
           fetch-depth: 0
 
       - name: Verify checks and promote the upstream version
         id: promote
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          PR_NUMBER: ${{ inputs.pr_number || '' }}
         shell: bash
         run: |
           set -euo pipefail
 
-          ci_conclusion=""
-          security_conclusion=""
-          for attempt in $(seq 1 60); do
-            runs_json=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SOURCE_SHA}&event=push&per_page=100")
-            ci_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "CI" and .head_branch == env.TARGET_BRANCH and .head_sha == env.SOURCE_SHA)] | sort_by(.created_at) | last | .conclusion // ""' <<< "$runs_json")
-            security_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "Security Scan" and .head_branch == env.TARGET_BRANCH and .head_sha == env.SOURCE_SHA)] | sort_by(.created_at) | last | .conclusion // ""' <<< "$runs_json")
-            ci_status=$(jq -r '[.workflow_runs[] | select(.name == "CI" and .head_branch == env.TARGET_BRANCH and .head_sha == env.SOURCE_SHA)] | sort_by(.created_at) | last | .status // ""' <<< "$runs_json")
-            security_status=$(jq -r '[.workflow_runs[] | select(.name == "Security Scan" and .head_branch == env.TARGET_BRANCH and .head_sha == env.SOURCE_SHA)] | sort_by(.created_at) | last | .status // ""' <<< "$runs_json")
-            if [[ "$ci_conclusion" == "success" && "$security_conclusion" == "success" ]]; then
-              break
-            fi
-            if [[ "$ci_conclusion" =~ ^(failure|cancelled|timed_out|action_required|startup_failure)$ || "$security_conclusion" =~ ^(failure|cancelled|timed_out|action_required|startup_failure)$ ]]; then
-              echo "CI or Security Scan failed: CI=${ci_conclusion:-$ci_status}, Security=${security_conclusion:-$security_status}" >&2
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ || ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+              echo "workflow_dispatch requires a full source SHA and merged PR number." >&2
               exit 1
             fi
-            if [[ "$attempt" == 60 ]]; then
-              echo "Timed out waiting for CI and Security Scan: CI=${ci_conclusion:-$ci_status}, Security=${security_conclusion:-$security_status}" >&2
+
+            pr_json=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+              --json baseRefName,state,mergedAt,mergeCommit,statusCheckRollup)
+            pr_base=$(jq -r '.baseRefName // ""' <<< "$pr_json")
+            pr_state=$(jq -r '.state // ""' <<< "$pr_json")
+            pr_merge_sha=$(jq -r '.mergeCommit.oid // ""' <<< "$pr_json")
+            custom_head=$(git ls-remote origin "refs/heads/${TARGET_BRANCH}" | awk 'NR == 1 { print $1 }')
+            if [[ "$pr_base" != "$TARGET_BRANCH" || "$pr_state" != "MERGED" || \
+              "$pr_merge_sha" != "$SOURCE_SHA" || "$custom_head" != "$SOURCE_SHA" ]]; then
+              echo "Release source is not the current merged commit from ${TARGET_BRANCH}." >&2
               exit 1
             fi
-            sleep 30
-          done
+
+            required_checks=(
+              custom-contract
+              frontend
+              golangci-lint
+              test
+              postgres-compatibility
+              'test-race (proxy-a-g)'
+              'test-race (proxy-h-z)'
+              'test-race (admin)'
+              'test-race (database)'
+              'test-race (promptfilter)'
+              'test-race (rest)'
+              backend-security
+              frontend-security
+            )
+            for check in "${required_checks[@]}"; do
+              conclusion=$(jq -r --arg name "$check" \
+                '[.statusCheckRollup[]? | select(.name == $name) | (.conclusion // .state // "")] | last // ""' \
+                <<< "$pr_json")
+              if [[ "${conclusion,,}" != "success" ]]; then
+                echo "Required check ${check} did not pass for PR #${PR_NUMBER}: ${conclusion:-missing}." >&2
+                exit 1
+              fi
+            done
+          else
+            ci_conclusion=""
+            security_conclusion=""
+            for attempt in $(seq 1 60); do
+              runs_json=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SOURCE_SHA}&event=push&per_page=100")
+              ci_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "CI" and .head_branch == env.TARGET_BRANCH and .head_sha == env.SOURCE_SHA)] | sort_by(.created_at) | last | .conclusion // ""' <<< "$runs_json")
+              security_conclusion=$(jq -r '[.workflow_runs[] | select(.name == "Security Scan" and .head_branch == env.TARGET_BRANCH and .head_sha == env.SOURCE_SHA)] | sort_by(.created_at) | last | .conclusion // ""' <<< "$runs_json")
+              ci_status=$(jq -r '[.workflow_runs[] | select(.name == "CI" and .head_branch == env.TARGET_BRANCH and .head_sha == env.SOURCE_SHA)] | sort_by(.created_at) | last | .status // ""' <<< "$runs_json")
+              security_status=$(jq -r '[.workflow_runs[] | select(.name == "Security Scan" and .head_branch == env.TARGET_BRANCH and .head_sha == env.SOURCE_SHA)] | sort_by(.created_at) | last | .status // ""' <<< "$runs_json")
+              if [[ "$ci_conclusion" == "success" && "$security_conclusion" == "success" ]]; then
+                break
+              fi
+              if [[ "$ci_conclusion" =~ ^(failure|cancelled|timed_out|action_required|startup_failure)$ || "$security_conclusion" =~ ^(failure|cancelled|timed_out|action_required|startup_failure)$ ]]; then
+                echo "CI or Security Scan failed: CI=${ci_conclusion:-$ci_status}, Security=${security_conclusion:-$security_status}" >&2
+                exit 1
+              fi
+              if [[ "$attempt" == 60 ]]; then
+                echo "Timed out waiting for CI and Security Scan: CI=${ci_conclusion:-$ci_status}, Security=${security_conclusion:-$security_status}" >&2
+                exit 1
+              fi
+              sleep 30
+            done
+          fi
 
           git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
           upstream_tag=$(sed -n '1p' .upstream-release 2>/dev/null || true)
@@ -78,6 +134,41 @@ jobs:
 
           git fetch --no-tags upstream "refs/tags/${upstream_tag}:refs/tags/upstream-${upstream_tag}"
           upstream_tag_sha=$(git rev-parse "refs/tags/upstream-${upstream_tag}^{commit}")
+
+          if ! git diff --quiet "$upstream_tag_sha" "$SOURCE_SHA" -- frontend/package-lock.json; then
+            UPSTREAM_TAG_SHA="$upstream_tag_sha" SOURCE_SHA="$SOURCE_SHA" node <<'NODE'
+          const { execFileSync } = require('node:child_process');
+
+          const readLock = (ref) => JSON.parse(execFileSync('git', [
+            'show', `${ref}:frontend/package-lock.json`,
+          ], { encoding: 'utf8' }));
+          const upstream = readLock(process.env.UPSTREAM_TAG_SHA);
+          const custom = readLock(process.env.SOURCE_SHA);
+          const packagePath = 'node_modules/source-map-js';
+          const upstreamPackage = upstream.packages?.[packagePath];
+          const customPackage = custom.packages?.[packagePath];
+
+          if (!upstreamPackage || !customPackage || upstreamPackage.version !== '1.2.1' ||
+              customPackage.version !== '1.2.2' ||
+              customPackage.resolved !== 'https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.2.tgz' ||
+              customPackage.integrity !== 'sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw==') {
+            throw new Error('The package-lock exception is not the reviewed source-map-js 1.2.2 security fix.');
+          }
+
+          for (const key of new Set([...Object.keys(upstreamPackage), ...Object.keys(customPackage)])) {
+            if (['version', 'resolved', 'integrity'].includes(key)) continue;
+            if (JSON.stringify(upstreamPackage[key]) !== JSON.stringify(customPackage[key])) {
+              throw new Error(`Unexpected source-map-js lock metadata change: ${key}`);
+            }
+          }
+
+          custom.packages[packagePath] = upstreamPackage;
+          if (JSON.stringify(custom) !== JSON.stringify(upstream)) {
+            throw new Error('The package-lock contains changes beyond the reviewed source-map-js security fix.');
+          }
+          console.log('The package-lock differs only by the reviewed source-map-js 1.2.2 security fix.');
+          NODE
+          fi
 
           # The upstream repository and this fork have independent histories.
           # Validate the synchronized tree instead of requiring the upstream
@@ -105,6 +196,7 @@ jobs:
             database/sub2_upstream_billing*
             database/usage_compaction_history_test.go
             docs/sub2api-upstream-billing-phase1.md
+            frontend/package-lock.json
             frontend/src/api.ts
             frontend/src/components/AccountQuickConfigSheet.tsx
             frontend/src/components/ChannelMonitorConfigDialog.tsx
