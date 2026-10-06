@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -94,6 +95,9 @@ jobs:
           preserve_dir=$(mktemp -d)
           trap 'rm -rf "$preserve_dir"' EXIT
           for path in \
+            frontend/package-lock.json \
+            .github/workflows/release.yml \
+            .github/workflows/upstream-release.yml \
             .github/workflows/upstream-sync.yml \
             .github/workflows/upstream-custom-sync.yml \
             .github/workflows/pr-check.yml \
@@ -106,6 +110,9 @@ jobs:
           git switch --create "$baseline_branch" "$expected_main_sha"
           git read-tree --reset -u "$upstream_sha"
           for path in \
+            frontend/package-lock.json \
+            .github/workflows/release.yml \
+            .github/workflows/upstream-release.yml \
             .github/workflows/upstream-sync.yml \
             .github/workflows/upstream-custom-sync.yml \
             .github/workflows/pr-check.yml \
@@ -167,12 +174,19 @@ jobs:
 
           merged=false
           for attempt in $(seq 1 100); do
-            pr_state=$(gh pr view "$pr_url" --json state,mergedAt --jq '.state + " " + (.mergedAt // "")')
-            if [[ "$pr_state" == MERGED* ]]; then
+            pr_json=$(gh pr view "$pr_url" --json state,mergedAt,statusCheckRollup)
+            pr_state=$(jq -r '.state // ""' <<< "$pr_json")
+            if [[ "$pr_state" == "MERGED" ]]; then
               merged=true
               break
             fi
-            if [[ "$pr_state" == CLOSED* ]]; then
+
+            failed_checks=$(jq -r '[.statusCheckRollup[]? | select((.conclusion // "") | ascii_downcase | IN("failure", "cancelled", "timed_out", "action_required", "startup_failure")) | .name] | join(", ")' <<< "$pr_json")
+            if [[ -n "$failed_checks" ]]; then
+              echo "Upstream baseline PR has failed checks: ${failed_checks}" >&2
+              exit 1
+            fi
+            if [[ "$pr_state" == "CLOSED" ]]; then
               echo "The upstream baseline PR closed without merging: ${pr_url}" >&2
               exit 1
             fi
