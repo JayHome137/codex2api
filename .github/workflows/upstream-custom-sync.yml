@@ -9,6 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -23,7 +24,7 @@ jobs:
   prepare-custom-pr:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout main baseline
         uses: actions/checkout@v5
@@ -59,10 +60,32 @@ jobs:
           echo "custom_release=${custom_tag:-<none>}"
 
           if [[ "$main_tag" == "$custom_tag" ]]; then
+            if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${main_tag}" >/dev/null 2>&1; then
+              {
+                echo "### Custom synchronization"
+                echo
+                echo "The custom branch and latest release are already at ${main_tag}."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+
+            custom_pr=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${expected_custom_sha}/pulls" \
+              --jq "[.[] | select(.base.ref == \"${TARGET_BRANCH}\" and .merged_at != null)] | sort_by(.merged_at) | last | .number // empty")
+            if [[ -z "$custom_pr" ]]; then
+              echo "${main_tag} is already on ${TARGET_BRANCH}, but no merged PR identifies its validated source." >&2
+              exit 1
+            fi
+            gh workflow run 'Publish Custom Release' \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref main \
+              -f "source_sha=${expected_custom_sha}" \
+              -f "pr_number=${custom_pr}"
             {
               echo "### Custom synchronization"
               echo
-              echo "The custom branch already contains ${main_tag}."
+              echo "The custom branch already contains ${main_tag}; release publication was dispatched from its merged PR."
+              echo "- source commit: `${expected_custom_sha}`"
+              echo "- PR: #${custom_pr}"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -80,6 +103,7 @@ jobs:
             .github/workflows/upstream-release.yml
             .github/workflows/upstream-sync.yml
             .github/workflows/upstream-custom-sync.yml
+            frontend/package-lock.json
             admin/account_response_builder.go
             admin/channel_monitor.go
             admin/channel_monitor_probe.go
@@ -213,11 +237,52 @@ jobs:
               --head "$sync_branch" \
               --title "chore: sync upstream release ${main_tag}" \
               --body-file "$pr_body_file")
+            pr_number=${pr_url##*/}
             gh pr merge "$pr_url" --auto --merge --delete-branch
           else
             pr_url="https://github.com/${GITHUB_REPOSITORY}/pull/${existing_pr}"
+            pr_number="$existing_pr"
             gh pr merge "$pr_url" --auto --merge --delete-branch
           fi
+
+          merged_sha=""
+          for attempt in $(seq 1 80); do
+            pr_json=$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" \
+              --json state,mergedAt,mergeCommit,statusCheckRollup)
+            pr_state=$(jq -r '.state // ""' <<< "$pr_json")
+            merged_sha=$(jq -r '.mergeCommit.oid // ""' <<< "$pr_json")
+            if [[ "$pr_state" == "MERGED" && -n "$merged_sha" ]]; then
+              break
+            fi
+
+            failed_checks=$(jq -r '[.statusCheckRollup[]? | select((.conclusion // "") | ascii_downcase | IN("failure", "cancelled", "timed_out", "action_required", "startup_failure")) | .name] | join(", ")' <<< "$pr_json")
+            if [[ -n "$failed_checks" ]]; then
+              echo "Custom PR #${pr_number} has failed checks: ${failed_checks}" >&2
+              exit 1
+            fi
+            if [[ "$pr_state" == "CLOSED" ]]; then
+              echo "Custom PR #${pr_number} closed without merging." >&2
+              exit 1
+            fi
+            if [[ "$attempt" == 80 ]]; then
+              echo "Timed out waiting for protected custom PR #${pr_number} to merge." >&2
+              exit 1
+            fi
+            sleep 15
+          done
+
+          git fetch --no-tags origin "refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+          current_custom_sha=$(git rev-parse "refs/remotes/origin/${TARGET_BRANCH}")
+          if [[ "$current_custom_sha" != "$merged_sha" ]]; then
+            echo "Custom branch advanced beyond PR #${pr_number}; refusing to publish a stale commit." >&2
+            exit 1
+          fi
+
+          gh workflow run 'Publish Custom Release' \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f "source_sha=${merged_sha}" \
+            -f "pr_number=${pr_number}"
 
           {
             echo "### Custom synchronization"
@@ -225,6 +290,7 @@ jobs:
             echo "Prepared ${main_tag} as a protected custom PR."
             echo "- sync branch: \`${sync_branch}\`"
             echo "- PR: ${pr_url}"
-            echo "- custom branch remains unchanged until required checks pass"
+            echo "- merged commit: `${merged_sha}`"
+            echo "- Release was explicitly dispatched after the required checks passed"
             echo "- custom behavior was protected on merge conflicts"
           } >> "$GITHUB_STEP_SUMMARY"
