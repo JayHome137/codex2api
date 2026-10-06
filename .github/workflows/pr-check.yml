@@ -15,6 +15,16 @@ on:
       - 'docs/**'
       - 'README.md'
       - 'CHANGELOG.md'
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: Base branch of the PR being validated
+        required: true
+        type: choice
+        options:
+          - main
+          - codex2api-custom
+        default: main
 permissions:
   contents: read
 
@@ -24,7 +34,7 @@ concurrency:
 
 jobs:
   custom-contract:
-    if: github.base_ref == 'codex2api-custom' || github.ref_name == 'codex2api-custom'
+    if: github.base_ref == 'codex2api-custom' || github.ref_name == 'codex2api-custom' || inputs.target_branch == 'codex2api-custom'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

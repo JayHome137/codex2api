@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: upstream-release-sync
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   UPSTREAM_REPOSITORY: james-6-23/codex2api
@@ -22,7 +22,7 @@ env:
 jobs:
   prepare-main-pr:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout release baseline
         uses: actions/checkout@v5
@@ -90,18 +90,19 @@ jobs:
             "refs/tags/${latest_tag}:refs/tags/upstream-${latest_tag}"
           upstream_sha=$(git rev-parse "refs/tags/upstream-${latest_tag}^{commit}")
 
-          # Main is the upstream baseline. Keep only the workflow files needed
-          # for the next automatic stage and for the protected CI contexts.
+          # Main follows the upstream tree, with maintained automation files
+          # and a narrow source-map-js security patch preserved.
           preserve_dir=$(mktemp -d)
           trap 'rm -rf "$preserve_dir"' EXIT
           for path in \
-            frontend/package-lock.json \
             .github/workflows/release.yml \
             .github/workflows/upstream-release.yml \
             .github/workflows/upstream-sync.yml \
             .github/workflows/upstream-custom-sync.yml \
             .github/workflows/pr-check.yml \
-            .github/workflows/security-scan.yml; do
+            .github/workflows/security-scan.yml \
+            .github/scripts/dispatch-pr-checks.sh \
+            .github/scripts/patch-source-map-js-lock.mjs; do
             mkdir -p "$preserve_dir/$(dirname "$path")"
             git show "refs/remotes/origin/${TARGET_BRANCH}:${path}" > "$preserve_dir/$path"
           done
@@ -110,16 +111,18 @@ jobs:
           git switch --create "$baseline_branch" "$expected_main_sha"
           git read-tree --reset -u "$upstream_sha"
           for path in \
-            frontend/package-lock.json \
             .github/workflows/release.yml \
             .github/workflows/upstream-release.yml \
             .github/workflows/upstream-sync.yml \
             .github/workflows/upstream-custom-sync.yml \
             .github/workflows/pr-check.yml \
-            .github/workflows/security-scan.yml; do
+            .github/workflows/security-scan.yml \
+            .github/scripts/dispatch-pr-checks.sh \
+            .github/scripts/patch-source-map-js-lock.mjs; do
             mkdir -p "$(dirname "$path")"
             cp "$preserve_dir/$path" "$path"
           done
+          node .github/scripts/patch-source-map-js-lock.mjs frontend/package-lock.json
           printf '%s\n' "$latest_tag" > .upstream-release
 
           git config user.name "github-actions[bot]"
@@ -166,11 +169,19 @@ jobs:
               --head "$baseline_branch" \
               --title "chore: sync upstream release ${latest_tag} into main" \
               --body-file "$pr_body_file")
-            gh pr merge "$pr_url" --auto --merge --delete-branch
           else
             pr_url="https://github.com/${GITHUB_REPOSITORY}/pull/${existing_pr}"
-            gh pr merge "$pr_url" --auto --merge --delete-branch
           fi
+
+          pr_number=${pr_url##*/}
+          pr_head_sha=$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq '.headRefOid')
+          expected_head_sha=$(git rev-parse "$baseline_branch")
+          if [[ "$pr_head_sha" != "$expected_head_sha" ]]; then
+            echo "Baseline PR #${pr_number} head does not match the prepared upstream commit." >&2
+            exit 1
+          fi
+          bash .github/scripts/dispatch-pr-checks.sh "$baseline_branch" "$pr_head_sha" main "$pr_number"
+          gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --auto --merge --delete-branch
 
           merged=false
           for attempt in $(seq 1 100); do
