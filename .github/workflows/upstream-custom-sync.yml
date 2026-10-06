@@ -15,7 +15,7 @@ permissions:
 
 concurrency:
   group: upstream-custom-sync
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   TARGET_BRANCH: codex2api-custom
@@ -24,7 +24,7 @@ jobs:
   prepare-custom-pr:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - name: Checkout main baseline
         uses: actions/checkout@v5
@@ -103,7 +103,6 @@ jobs:
             .github/workflows/upstream-release.yml
             .github/workflows/upstream-sync.yml
             .github/workflows/upstream-custom-sync.yml
-            frontend/package-lock.json
             admin/account_response_builder.go
             admin/channel_monitor.go
             admin/channel_monitor_probe.go
@@ -136,6 +135,8 @@ jobs:
             frontend/src/pages/ChannelMonitor.tsx
             frontend/src/pages/Usage.tsx
             frontend/src/types.ts
+            .github/scripts/dispatch-pr-checks.sh
+            .github/scripts/patch-source-map-js-lock.mjs
             proxy/handler.go
             proxy/sub2_upstream_probe.go
             proxy/sub2_upstream_probe_test.go
@@ -238,12 +239,18 @@ jobs:
               --title "chore: sync upstream release ${main_tag}" \
               --body-file "$pr_body_file")
             pr_number=${pr_url##*/}
-            gh pr merge "$pr_url" --auto --merge --delete-branch
           else
             pr_url="https://github.com/${GITHUB_REPOSITORY}/pull/${existing_pr}"
             pr_number="$existing_pr"
-            gh pr merge "$pr_url" --auto --merge --delete-branch
           fi
+
+          pr_head_sha=$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq '.headRefOid')
+          if [[ "$pr_head_sha" != "$custom_sha" ]]; then
+            echo "Custom PR #${pr_number} head does not match the prepared synchronization commit." >&2
+            exit 1
+          fi
+          bash .github/scripts/dispatch-pr-checks.sh "$sync_branch" "$pr_head_sha" "$TARGET_BRANCH" "$pr_number"
+          gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --auto --merge --delete-branch
 
           merged_sha=""
           for attempt in $(seq 1 80); do
