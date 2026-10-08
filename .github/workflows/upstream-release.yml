@@ -201,6 +201,7 @@ jobs:
             frontend/src/components/AccountQuickConfigSheet.tsx
             frontend/src/components/ChannelMonitorConfigDialog.tsx
             frontend/src/components/Layout.tsx
+            frontend/src/components/ui/table.tsx
             frontend/src/components/ui/tooltip.tsx
             frontend/src/lib/accountQuickConfig.ts
             frontend/src/lib/channelMonitorBilling*
@@ -208,6 +209,7 @@ jobs:
             frontend/src/locales/zh.json
             frontend/src/pages/APIKeyUsagePortal.tsx
             frontend/src/pages/Accounts.tsx
+            frontend/src/pages/accounts-cards.css
             frontend/src/pages/ChannelMonitor.tsx
             frontend/src/pages/Usage.tsx
             frontend/src/types.ts
