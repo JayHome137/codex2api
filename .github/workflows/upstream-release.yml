@@ -203,6 +203,7 @@ jobs:
             frontend/src/components/Layout.tsx
             frontend/src/components/ui/table.tsx
             frontend/src/components/ui/tooltip.tsx
+            frontend/src/index.css
             frontend/src/lib/accountQuickConfig.ts
             frontend/src/lib/channelMonitorBilling*
             frontend/src/locales/en.json
