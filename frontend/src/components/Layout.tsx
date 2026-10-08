@@ -361,7 +361,7 @@ export default function Layout({ children }: PropsWithChildren) {
           <div className={`flex flex-col h-full ${sidebarCollapsed ? 'px-2' : 'px-4'} pt-5 pb-4 transition-[padding] ${containerEase}`}>
             {/* Brand */}
             <div className={`pb-4 border-b border-border ${sidebarCollapsed ? 'flex justify-center' : ''}`}>
-              <div className={`flex items-center gap-3 ${sidebarCollapsed ? 'justify-center' : ''}`}>
+              <div className={`flex items-center ${sidebarCollapsed ? 'justify-center gap-0' : 'gap-3'}`}>
                 <img src={logoSrc} alt={siteName} className="size-10 rounded-lg object-cover shadow-sm shrink-0" />
                 <div
                   aria-hidden={sidebarCollapsed}
