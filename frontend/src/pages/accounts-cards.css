@@ -741,7 +741,7 @@
   outline-offset: 3px;
 }
 
-@container codex-account-list (min-width: 64rem) {
+@container codex-account-list (min-width: 52rem) {
   .codex-account-grid--personal {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
