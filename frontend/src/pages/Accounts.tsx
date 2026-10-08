@@ -2313,7 +2313,7 @@ export default function Accounts() {
   const pageModeUserSetRef = useRef(getStoredAccountPageMode() !== null);
   // 自动判定只在首次（账号加载完成后）应用一次。
   const pageModeAutoAppliedRef = useRef(false);
-  const isDesktopLayout = useMediaQuery("(min-width: 1024px)");
+  const isDesktopLayout = useMediaQuery("(min-width: 1280px)");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const jsonInputRef = useRef<HTMLInputElement>(null);
   const jsonAtInputRef = useRef<HTMLInputElement>(null);
@@ -7592,7 +7592,7 @@ export default function Accounts() {
 
                 {shouldRenderDesktopTable ? (
                   <div
-                    className={`data-table-shell hidden lg:block ${
+                    className={`data-table-shell hidden xl:block ${
                       sortedAccounts.length <= pageSize ? "account-table-shell-fit-content" : ""
                     }`}
                   >
