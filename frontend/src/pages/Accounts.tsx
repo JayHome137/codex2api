@@ -2812,7 +2812,7 @@ export default function Accounts() {
   useEffect(() => {
     if (providerView !== "codex") return;
     let cancelled = false;
-    void api.getAPIKeys()
+    void api.getAPIKeys({ view: 'lite' })
       .then((response) => { if (!cancelled) setAPIKeys(response.keys ?? []); })
       .catch(() => undefined);
     void api.listAccountGroups()
@@ -14227,6 +14227,7 @@ function AccountMobileCard({
                   <AccountConcurrencyBadge account={account} />
                 </>
               )}
+              <DaybreakBadge models={account.daybreak_models} />
               {isFullCard && resetCredits > 0 && (
                 <button
                   type="button"
@@ -14238,7 +14239,6 @@ function AccountMobileCard({
                   {resetCredits}
                 </button>
               )}
-              <DaybreakBadge models={account.daybreak_models} />
               {isFullCard && creditBalance !== null && (
                 <button
                   type="button"
