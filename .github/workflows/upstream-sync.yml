@@ -174,10 +174,18 @@ jobs:
           fi
 
           pr_number=${pr_url##*/}
-          pr_head_sha=$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq '.headRefOid')
           expected_head_sha=$(git rev-parse "$baseline_branch")
+          pr_head_sha=""
+          for attempt in $(seq 1 20); do
+            pr_head_sha=$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
+            if [[ "$pr_head_sha" == "$expected_head_sha" ]]; then
+              break
+            fi
+            sleep 2
+          done
           if [[ "$pr_head_sha" != "$expected_head_sha" ]]; then
-            echo "Baseline PR #${pr_number} head does not match the prepared upstream commit." >&2
+            echo "Baseline PR #${pr_number} head does not match the prepared upstream commit after waiting for GitHub to converge." >&2
+            echo "expected=${expected_head_sha} actual=${pr_head_sha:-<empty>}" >&2
             exit 1
           fi
           bash .github/scripts/dispatch-pr-checks.sh "$baseline_branch" "$pr_head_sha" main "$pr_number"
