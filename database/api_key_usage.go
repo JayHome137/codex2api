@@ -841,7 +841,7 @@ func (db *DB) GetAPIKeySelfUsageReportFiltered(ctx context.Context, apiKeyID int
 	if report.Endpoints, err = db.listAPIKeySelfUsageBreakdown(ctx, apiKeyID, rangeStart, rangeEnd, "endpoint", 8); err != nil {
 		return nil, err
 	}
-	report.RecentLogs, report.RecentLogsTotal, report.RecentLogsPage, report.RecentLogsPageSize, err = db.listAPIKeySelfRecentLogs(ctx, apiKeyID, rangeStart, rangeEnd, recentPage, recentPageSize, logFilter)
+		report.RecentLogs, report.RecentLogsTotal, report.RecentLogsPage, report.RecentLogsPageSize, err = db.listAPIKeySelfRecentLogs(ctx, apiKeyID, rangeStart, rangeEnd, recentPage, recentPageSize, logFilter, report.Summary.Requests)
 	if err != nil {
 		return nil, err
 	}
@@ -1065,19 +1065,19 @@ func (db *DB) listAPIKeySelfUsageBreakdown(ctx context.Context, apiKeyID int64, 
 	return items, nil
 }
 
-func (db *DB) listAPIKeySelfRecentLogs(ctx context.Context, apiKeyID int64, rangeStart, rangeEnd time.Time, page, pageSize int, filters ...APIKeySelfLogFilter) ([]APIKeySelfUsageLog, int64, int, int, error) {
+// listAPIKeySelfRecentLogs 分页列出自助页请求日志。knownTotal >= 0 时表示调用方已从区间汇总
+// 得到同口径总数,筛选为空时直接复用,省一次计数扫描。
+func (db *DB) listAPIKeySelfRecentLogs(ctx context.Context, apiKeyID int64, rangeStart, rangeEnd time.Time, page, pageSize int, filter APIKeySelfLogFilter, knownTotal int64) ([]APIKeySelfUsageLog, int64, int, int, error) {
 	page, pageSize = normalizeAPIKeySelfRecentLogPagination(page, pageSize)
-	filter := APIKeySelfLogFilter{}
-	if len(filters) > 0 {
-		filter = filters[0]
-	}
-	where, args := db.apiKeySelfUsageWhere(apiKeyID, rangeStart, rangeEnd)
-	where, args = appendAPIKeySelfLogFilter(where, args, filter)
+	baseWhere, args := db.apiKeySelfUsageWhere(apiKeyID, rangeStart, rangeEnd)
+	where, args := appendAPIKeySelfLogFilter(baseWhere, args, filter)
 
-	var total int64
-	countQuery := `SELECT COUNT(*) FROM usage_logs WHERE ` + where
-	if err := db.conn.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, page, pageSize, err
+	total := knownTotal
+	if total < 0 || where != baseWhere {
+		countQuery := `SELECT COUNT(*) FROM usage_logs WHERE ` + where
+		if err := db.conn.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+			return nil, 0, page, pageSize, err
+		}
 	}
 	if total > 0 {
 		totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
