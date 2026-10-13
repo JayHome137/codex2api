@@ -212,6 +212,7 @@ jobs:
             frontend/src/pages/Usage.tsx
             frontend/src/types.ts
             proxy/handler.go
+            proxy/native_oauth_routes_test.go
             proxy/official_model_pricing*
             proxy/sub2_upstream_probe*
           )
