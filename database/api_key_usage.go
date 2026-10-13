@@ -2,8 +2,12 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 )
@@ -841,7 +845,7 @@ func (db *DB) GetAPIKeySelfUsageReportFiltered(ctx context.Context, apiKeyID int
 	if report.Endpoints, err = db.listAPIKeySelfUsageBreakdown(ctx, apiKeyID, rangeStart, rangeEnd, "endpoint", 8); err != nil {
 		return nil, err
 	}
-		report.RecentLogs, report.RecentLogsTotal, report.RecentLogsPage, report.RecentLogsPageSize, err = db.listAPIKeySelfRecentLogs(ctx, apiKeyID, rangeStart, rangeEnd, recentPage, recentPageSize, logFilter, report.Summary.Requests)
+	report.RecentLogs, report.RecentLogsTotal, report.RecentLogsPage, report.RecentLogsPageSize, err = db.listAPIKeySelfRecentLogs(ctx, apiKeyID, rangeStart, rangeEnd, recentPage, recentPageSize, logFilter, report.Summary.Requests)
 	if err != nil {
 		return nil, err
 	}
@@ -1063,6 +1067,333 @@ func (db *DB) listAPIKeySelfUsageBreakdown(ctx context.Context, apiKeyID int64, 
 		items = []APIKeySelfUsageBreakdown{}
 	}
 	return items, nil
+}
+
+// fillAPIKeySelfAggregates 同时填出区间汇总、模型/端点排行(前 8)、日志筛选下拉选项,
+// 以及今日/5h/7d/30d 四个额度窗口。
+//
+// 扫描范围取区间与 30 天窗口的并集。区间起止、各窗口起点和"一分钟前"把时间轴切成几段,
+// 按(展示模型, 端点, 请求模型, 时间段)分组:每行只算一次段号,聚合都是普通 SUM;
+// 区间、窗口与 RPM 在 Go 里按段合并。分组只有几十到几百行。
+// 整点小时读用量小时汇总,只有边界所在的小时回明细扫描,30 天区间的明细读取量从全部行
+// 降到最多几个小时。
+// 窗口口径与限额判定用的 GetAPIKeyWindowUsage/GetAPIKeyUsageSince 一致:排除 499,
+// 5h/7d 从手动重置时刻起算。
+func (db *DB) fillAPIKeySelfAggregates(ctx context.Context, report *APIKeySelfUsageReport, apiKeyID int64, rangeStart, rangeEnd, now time.Time) error {
+	var lastResetRaw interface{}
+	err := db.conn.QueryRowContext(ctx, `SELECT last_reset_at FROM api_keys WHERE id = $1`, apiKeyID).Scan(&lastResetRaw)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	lastReset, err := parseDBTimeValue(lastResetRaw)
+	if err != nil {
+		return err
+	}
+
+	dayStart := StartOfDay(now)
+	resetAt := dayStart.AddDate(0, 0, 1)
+	report.Windows = APIKeySelfUsageWindows{
+		Today:   APIKeySelfUsageWindow{WindowKind: usageWindowKindFixed, ResetAt: &resetAt},
+		Last5h:  APIKeySelfUsageWindow{WindowKind: usageWindowKindSliding},
+		Last7d:  APIKeySelfUsageWindow{WindowKind: usageWindowKindSliding},
+		Last30d: APIKeySelfUsageWindow{WindowKind: usageWindowKindSliding},
+	}
+	windows := []struct {
+		target *APIKeySelfUsageWindow
+		since  time.Time
+		length time.Duration // 0 = 自然日固定窗口
+	}{
+		{&report.Windows.Today, dayStart, 0},
+		{&report.Windows.Last5h, now.Add(-5 * time.Hour), 5 * time.Hour},
+		{&report.Windows.Last7d, now.Add(-7 * 24 * time.Hour), 7 * 24 * time.Hour},
+		{&report.Windows.Last30d, now.Add(-30 * 24 * time.Hour), 30 * 24 * time.Hour},
+	}
+	minuteAgo := now.Add(-1 * time.Minute)
+
+	// 时间边界降序去重;段 k 覆盖 [bounds[k], bounds[k-1]),最后一段覆盖 bounds 末项之前。
+	// 区间终点就是"现在"时不设上界,省一个边界。
+	hasRangeEnd := !rangeEnd.IsZero() && now.Sub(rangeEnd) > time.Second
+	scanStart := rangeStart
+	bounds := []time.Time{minuteAgo}
+	if !rangeStart.IsZero() {
+		bounds = append(bounds, rangeStart)
+	}
+	if hasRangeEnd {
+		bounds = append(bounds, rangeEnd)
+	}
+	for i := range windows {
+		if windows[i].length > 0 && isResettableAPIKeyWindow(windows[i].length) && lastReset.After(windows[i].since) {
+			windows[i].since = lastReset
+		}
+		if !scanStart.IsZero() && windows[i].since.Before(scanStart) {
+			scanStart = windows[i].since
+		}
+		bounds = append(bounds, windows[i].since)
+	}
+	sort.Slice(bounds, func(i, j int) bool { return bounds[i].After(bounds[j]) })
+	bounds = slices.CompactFunc(bounds, time.Time.Equal)
+	segmentsFrom := func(t time.Time) int { // t 是某个边界:返回 created_at >= t 的段数
+		return slices.IndexFunc(bounds, t.Equal) + 1
+	}
+	segmentExpr := func(column string, args []interface{}) (string, []interface{}) {
+		expr := "CASE"
+		for k, bound := range bounds {
+			args = append(args, db.timeArg(bound))
+			expr += fmt.Sprintf(" WHEN %s >= $%d THEN %d", column, len(args), k)
+		}
+		return expr + fmt.Sprintf(" ELSE %d END", len(bounds)), args
+	}
+
+	rangeFirst, rangeLast := 0, len(bounds) // 区间内的段号闭区间
+	if hasRangeEnd {
+		rangeFirst = segmentsFrom(rangeEnd)
+	}
+	if !rangeStart.IsZero() {
+		rangeLast = segmentsFrom(rangeStart) - 1
+	}
+	minuteSegments := segmentsFrom(minuteAgo)
+	windowSegments := make([]int, len(windows))
+	for i := range windows {
+		windowSegments[i] = segmentsFrom(windows[i].since)
+	}
+
+	var summary APIKeySelfUsageSummary
+	var durationSum, durationCount, firstTokenSum, firstTokenCount int64
+	models := map[string]*APIKeySelfUsageBreakdown{}
+	endpoints := map[string]*APIKeySelfUsageBreakdown{}
+	requestModels := map[string]int64{}
+	windowOldest := make([]time.Time, len(windows))
+	// 明细与汇总两条查询列布局一致,共用这段累加。
+	accumulate := func(query string, args []interface{}) error {
+		rows, err := db.conn.QueryContext(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var g APIKeySelfUsageBreakdown
+			var endpoint, requestModel string
+			var segment int
+			var groupDurationSum, groupDurationCount, groupFirstTokenSum, groupFirstTokenCount int64
+			var oldestRaw interface{}
+			if err := rows.Scan(
+				&g.Name, &endpoint, &requestModel, &segment,
+				&g.Requests, &g.Tokens, &g.InputTokens, &g.OutputTokens, &g.CachedTokens, &g.ErrorCount, &g.UserBilled,
+				&groupDurationSum, &groupDurationCount, &groupFirstTokenSum, &groupFirstTokenCount,
+				&oldestRaw,
+			); err != nil {
+				return err
+			}
+			oldest, err := parseDBTimeValue(oldestRaw)
+			if err != nil {
+				return err
+			}
+			for i := range windows {
+				if segment >= windowSegments[i] {
+					continue
+				}
+				usage := &windows[i].target.APIKeyWindowUsage
+				usage.Requests += g.Requests
+				usage.Tokens += g.Tokens
+				usage.UserBilled += g.UserBilled
+				if !oldest.IsZero() && (windowOldest[i].IsZero() || oldest.Before(windowOldest[i])) {
+					windowOldest[i] = oldest
+				}
+			}
+			if segment < rangeFirst || segment > rangeLast {
+				continue
+			}
+			summary.Requests += g.Requests
+			summary.Tokens += g.Tokens
+			summary.InputTokens += g.InputTokens
+			summary.OutputTokens += g.OutputTokens
+			summary.CachedTokens += g.CachedTokens
+			summary.ErrorCount += g.ErrorCount
+			summary.UserBilled += g.UserBilled
+			if segment < minuteSegments {
+				summary.RPM += g.Requests
+				summary.TPM += g.Tokens
+			}
+			durationSum += groupDurationSum
+			durationCount += groupDurationCount
+			firstTokenSum += groupFirstTokenSum
+			firstTokenCount += groupFirstTokenCount
+			for _, bucket := range []struct {
+				byName map[string]*APIKeySelfUsageBreakdown
+				name   string
+			}{{models, g.Name}, {endpoints, endpoint}} {
+				item := bucket.byName[bucket.name]
+				if item == nil {
+					item = &APIKeySelfUsageBreakdown{Name: bucket.name}
+					bucket.byName[bucket.name] = item
+				}
+				item.Requests += g.Requests
+				item.Tokens += g.Tokens
+				item.InputTokens += g.InputTokens
+				item.OutputTokens += g.OutputTokens
+				item.CachedTokens += g.CachedTokens
+				item.ErrorCount += g.ErrorCount
+				item.UserBilled += g.UserBilled
+			}
+			if requestModel != "" {
+				requestModels[requestModel] += g.Requests
+			}
+		}
+		return rows.Err()
+	}
+
+	plan := db.planUsageHourlyQuery(ctx, scanStart, time.Time{}, now, bounds...)
+	for _, span := range plan.raw {
+		args := []interface{}{apiKeyID}
+		segment, args := segmentExpr("created_at", args)
+		spanWhere, args := db.usageSpanWhere("created_at", span, args)
+		query := `
+			SELECT
+				COALESCE(NULLIF(effective_model, ''), NULLIF(model, ''), 'unknown'),
+				` + apiKeySelfEndpointExpr + `,
+				COALESCE(model, ''),
+				` + segment + `,
+				COUNT(*),
+				COALESCE(SUM(total_tokens), 0),
+				COALESCE(SUM(input_tokens), 0),
+				COALESCE(SUM(output_tokens), 0),
+				COALESCE(SUM(cached_tokens), 0),
+				COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(user_billed), 0),
+				COALESCE(SUM(NULLIF(duration_ms, 0)), 0),
+				COUNT(NULLIF(duration_ms, 0)),
+				COALESCE(SUM(NULLIF(first_token_ms, 0)), 0),
+				COUNT(NULLIF(first_token_ms, 0)),
+				MIN(created_at)
+			FROM usage_logs
+			WHERE api_key_id = $1 AND status_code <> 499 AND ` + spanWhere + `
+			GROUP BY 1, 2, 3, 4`
+		if err := accumulate(query, args); err != nil {
+			return err
+		}
+	}
+	if plan.useRollup {
+		args := []interface{}{apiKeyID}
+		segment, args := segmentExpr("bucket", args)
+		bucketWhere, args := db.usageHourlyBucketWhere("bucket", plan, args)
+		query := `
+			SELECT
+				COALESCE(NULLIF(effective_model, ''), NULLIF(model, ''), 'unknown'),
+				` + apiKeySelfEndpointExpr + `,
+				model,
+				` + segment + `,
+				` + sumBigint("requests") + `,
+				` + sumBigint("total_tokens") + `,
+				` + sumBigint("input_tokens") + `,
+				` + sumBigint("output_tokens") + `,
+				` + sumBigint("cached_tokens") + `,
+				` + sumBigint("CASE WHEN status_code >= 400 THEN requests ELSE 0 END") + `,
+				COALESCE(SUM(user_billed), 0),
+				` + sumBigint("duration_ms_sum") + `,
+				` + sumBigint("duration_samples") + `,
+				` + sumBigint("first_token_ms_sum") + `,
+				` + sumBigint("first_token_samples") + `,
+				MIN(min_created_at)
+			FROM usage_log_hourly
+			WHERE api_key_id = $1 AND status_code <> 499 AND ` + bucketWhere + `
+			GROUP BY 1, 2, 3, 4`
+		if err := accumulate(query, args); err != nil {
+			return err
+		}
+	}
+
+	for i, w := range windows {
+		if windowOldest[i].IsZero() {
+			continue
+		}
+		oldest := windowOldest[i]
+		w.target.OldestAt = &oldest
+		if w.length > 0 {
+			decay := oldest.Add(w.length)
+			w.target.DecayAt = &decay
+		}
+	}
+	if durationCount > 0 {
+		summary.AvgDurationMS = float64(durationSum) / float64(durationCount)
+	}
+	if firstTokenCount > 0 {
+		summary.AvgFirstTokenMS = float64(firstTokenSum) / float64(firstTokenCount)
+	}
+	report.Summary = summary
+	report.Models = topAPIKeySelfBreakdowns(models, 8)
+	report.Endpoints = topAPIKeySelfBreakdowns(endpoints, 8)
+	report.LogModels = apiKeySelfOptionsByCount(requestModels)
+	endpointCounts := make(map[string]int64, len(endpoints))
+	for name, item := range endpoints {
+		endpointCounts[name] = item.Requests
+	}
+	report.LogEndpoints = apiKeySelfOptionsByCount(endpointCounts)
+	return nil
+}
+
+// topAPIKeySelfBreakdowns 按计费降序、请求数降序、名称升序取前 limit 项。
+func topAPIKeySelfBreakdowns(byName map[string]*APIKeySelfUsageBreakdown, limit int) []APIKeySelfUsageBreakdown {
+	items := make([]APIKeySelfUsageBreakdown, 0, len(byName))
+	for _, item := range byName {
+		items = append(items, *item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].UserBilled != items[j].UserBilled {
+			return items[i].UserBilled > items[j].UserBilled
+		}
+		if items[i].Requests != items[j].Requests {
+			return items[i].Requests > items[j].Requests
+		}
+		return items[i].Name < items[j].Name
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items
+}
+
+// apiKeySelfOptionsByCount 按请求量降序、取值升序列出筛选下拉选项,最多 apiKeySelfLogOptionLimit 个。
+func apiKeySelfOptionsByCount(counts map[string]int64) []string {
+	values := make([]string, 0, len(counts))
+	for value := range counts {
+		values = append(values, value)
+	}
+	sort.Slice(values, func(i, j int) bool {
+		if counts[values[i]] != counts[values[j]] {
+			return counts[values[i]] > counts[values[j]]
+		}
+		return values[i] < values[j]
+	})
+	if len(values) > apiKeySelfLogOptionLimit {
+		values = values[:apiKeySelfLogOptionLimit]
+	}
+	return values
+}
+
+// countAPIKeySelfLogs 统计自助页日志筛选命中的条数。筛选列都是用量小时汇总的维度,
+// 整点小时读汇总,首尾零头扫明细;带筛选时不必把区间内每一行明细都读一遍。
+func (db *DB) countAPIKeySelfLogs(ctx context.Context, apiKeyID int64, rangeStart, rangeEnd time.Time, filter APIKeySelfLogFilter) (int64, error) {
+	var total int64
+	plan := db.planUsageHourlyQuery(ctx, rangeStart, rangeEnd, time.Now())
+	for _, span := range plan.raw {
+		where, args := db.apiKeySelfUsageWhere(apiKeyID, span.start, span.end)
+		where, args = appendAPIKeySelfLogFilter(where, args, filter)
+		var count int64
+		if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_logs WHERE `+where, args...).Scan(&count); err != nil {
+			return 0, err
+		}
+		total += count
+	}
+	if plan.useRollup {
+		bucketWhere, args := db.usageHourlyBucketWhere("bucket", plan, []interface{}{apiKeyID})
+		where, args := appendAPIKeySelfLogFilter("api_key_id = $1 AND status_code <> 499 AND "+bucketWhere, args, filter)
+		var count int64
+		if err := db.conn.QueryRowContext(ctx, `SELECT `+sumBigint("requests")+` FROM usage_log_hourly WHERE `+where, args...).Scan(&count); err != nil {
+			return 0, err
+		}
+		total += count
+	}
+	return total, nil
 }
 
 // listAPIKeySelfRecentLogs 分页列出自助页请求日志。knownTotal >= 0 时表示调用方已从区间汇总
