@@ -86,14 +86,6 @@ func TestNativeOAuthRoutesWithLegacyCredentials(t *testing.T) {
 	}
 	requests := make(chan observedRequest, 16)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Native requests may emit an independent OTLP telemetry POST while the
-		// Responses WebSocket is running. It is unrelated to this route test and
-		// must not race the queue used to assert the Codex request path.
-		if !strings.Contains(r.URL.Path, "/backend-api/codex/") {
-			_, _ = io.Copy(io.Discard, r.Body)
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
 		observed := observedRequest{path: r.URL.Path, headers: r.Header.Clone(), websocket: websocket.IsWebSocketUpgrade(r)}
 		if observed.websocket {
 			conn, err := (&websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}).Upgrade(w, r, nil)

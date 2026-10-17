@@ -401,6 +401,7 @@ export interface AccountRow {
   grok_rate_limit?: GrokRateLimitSnapshot
   grok_free_quota?: GrokFreeQuotaSnapshot
   antigravity_project_id?: string
+  antigravity_user_project_id?: string
   antigravity_avatar_url?: string
   antigravity_verified_email?: boolean
   project_id?: string
@@ -1110,7 +1111,7 @@ export interface AntigravityModelQuota {
   model?: string
   model_id?: string
   name?: string
-  remaining_fraction: number
+  remaining_fraction?: number
   remaining_percent?: number
   reset_time?: string
   display_name?: string
@@ -1140,6 +1141,7 @@ export interface AntigravityQuotaGroup {
 
 export interface AntigravityQuotaSnapshot {
   models: Record<string, AntigravityModelQuota> | AntigravityModelQuota[]
+  catalog_model_ids?: string[]
   quota_groups?: AntigravityQuotaGroup[]
   groups?: AntigravityQuotaGroup[]
   subscription_tier?: string
@@ -1240,6 +1242,8 @@ export interface UpdateAntigravityAccountRequest {
   model_mapping?: string
   proxy_url?: string
   group_ids?: number[]
+  /** Caller-owned GCP project for Workspace / enterprise OAuth accounts; "" clears it. */
+  user_project_id?: string
 }
 
 export interface AntigravityImportRequest {
@@ -2254,6 +2258,7 @@ export interface SystemSettings {
   oauth_model_cooldown_mode: ModelCooldownMode
   oauth_model_cooldown_seconds: number
   oauth_model_cooldown_backoff_enabled: boolean
+  oauth_unsupported_model_cooldown_seconds: number
   expired_cleaned?: number
   model_mapping: string
   codex_model_mapping: string
