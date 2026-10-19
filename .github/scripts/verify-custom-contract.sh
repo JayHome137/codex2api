@@ -59,6 +59,8 @@ required_contracts=(
   'frontend/src/components/ui/tooltip.tsx|ResponsiveTooltip }'
   'frontend/src/pages/APIKeyUsagePortal.tsx|<ResponsiveTooltip'
   'frontend/src/pages/Usage.tsx|<ResponsiveTooltip'
+  'README.md|## Custom maintenance'
+  'README.zh-CN.md|## 自定义维护内容'
 )
 
 for contract in "${required_contracts[@]}"; do
