@@ -19,6 +19,8 @@ permissions:
   actions: read
   contents: write
   pull-requests: read
+  # statusCheckRollup includes commit statuses (.context / .state).
+  statuses: read
 
 concurrency:
   # A single release lane prevents two custom commits from racing for the
@@ -54,6 +56,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          source .github/scripts/dispatch-pr-checks.sh
 
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ || ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
@@ -73,25 +76,12 @@ jobs:
               exit 1
             fi
 
-            required_checks=(
-              custom-contract
-              frontend
-              golangci-lint
-              test
-              postgres-compatibility
-              'test-race (proxy-a-g)'
-              'test-race (proxy-h-z)'
-              'test-race (admin)'
-              'test-race (database)'
-              'test-race (promptfilter)'
-              'test-race (rest)'
-              backend-security
-              frontend-security
-            )
-            for check in "${required_checks[@]}"; do
-              conclusion=$(jq -r --arg name "$check" \
-                '[.statusCheckRollup[]? | select(.name == $name) | (.conclusion // .state // "")] | last // ""' \
-                <<< "$pr_json")
+            rollup=$(jq -c '.statusCheckRollup // []' <<<"$pr_json")
+            for check in "${required_custom_check_names[@]}"; do
+              # Check runs expose .name/.conclusion. Mirrored commit statuses
+              # expose .context/.state. Matching only .name reports every
+              # mirrored success as missing.
+              conclusion=$(check_state_in_rollup "$rollup" "$check")
               if [[ "${conclusion,,}" != "success" ]]; then
                 echo "Required check ${check} did not pass for PR #${PR_NUMBER}: ${conclusion:-missing}." >&2
                 exit 1
@@ -175,48 +165,10 @@ jobs:
           # commit to be an ancestor of the custom commit. These paths are the
           # maintained fork contract; every other path must match the upstream
           # release tree exactly.
-          custom_content_paths=(
-            .dockerignore
-            .github/**
-            .upstream-release
-            deploy.sh
-            docker-compose.yml
-            docker-compose.sqlite.yml
-            admin/account_response_builder.go
-            admin/channel_monitor*
-            admin/handler.go
-            admin/sub2_upstream_rate.go
-            admin/system_update.go
-            database/api_key_usage.go
-            database/billing*
-            database/channel_monitor*
-            database/image_user_billing_test.go
-            database/postgres.go
-            database/sqlite.go
-            database/sub2_upstream_billing*
-            database/usage_compaction_history_test.go
-            docs/sub2api-upstream-billing-phase1.md
-            frontend/package-lock.json
-            frontend/src/api.ts
-            frontend/src/components/AccountQuickConfigSheet.tsx
-            frontend/src/components/ChannelMonitorConfigDialog.tsx
-            frontend/src/components/Layout.tsx
-            frontend/src/components/ui/tooltip.tsx
-            frontend/src/lib/accountQuickConfig.ts
-            frontend/src/lib/channelMonitorBilling*
-            frontend/src/locales/en.json
-            frontend/src/locales/zh.json
-            frontend/src/pages/APIKeyUsagePortal.tsx
-            frontend/src/pages/Accounts.tsx
-            frontend/src/pages/ChannelMonitor.tsx
-            frontend/src/pages/Usage.tsx
-            frontend/src/types.ts
-            proxy/handler.go
-            proxy/official_model_pricing*
-            proxy/sub2_upstream_probe*
-          )
+          # Same list the custom sync preserves, plus the lockfile patch,
+          # the release marker, and the billing files the fork deletes.
           compare_pathspecs=(.)
-          for path in "${custom_content_paths[@]}"; do
+          for path in "${custom_release_exclude_paths[@]}"; do
             compare_pathspecs+=(":(exclude)${path}")
           done
           mapfile -t unexpected_paths < <(
