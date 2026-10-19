@@ -1,3 +1,6 @@
+import { useIntelligenceBars } from "../hooks/useIntelligenceBars";
+import AccountIntelligenceBar, { AccountIntelligenceActions } from "../components/AccountIntelligenceBar";
+import type { IntelligenceBar } from "../lib/intelligenceCheck";
 import type { ChangeEvent, DragEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { memo, useCallback, useEffect, useRef, useState, useMemo } from "react";
 import "./accounts-cards.css";
@@ -351,7 +354,7 @@ function AccountConcurrencyBadge({ account }: { account: AccountRow }) {
 
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-blue-600 ring-1 ring-inset ring-blue-500/20 dark:bg-blue-950 dark:text-blue-400 dark:ring-blue-400/20"
+      className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-blue-600 ring-1 ring-inset ring-blue-500/20 dark:bg-blue-950 dark:text-blue-400 dark:ring-blue-400/20"
       title={titleLines.join("\n")}
     >
       <span
@@ -1188,6 +1191,8 @@ const AccountTableRow = memo(function AccountTableRow({
   allGroups,
   proxyCtx,
   healthBuckets,
+  intelligenceBar,
+  intelligenceError,
   lazyMode,
   refreshing,
   authJsonExporting,
@@ -1203,6 +1208,8 @@ const AccountTableRow = memo(function AccountTableRow({
   allGroups: AccountGroup[];
   proxyCtx: ProxyBindingContext;
   healthBuckets: AccountHealthBucket[] | undefined;
+  intelligenceBar?: IntelligenceBar;
+  intelligenceError?: boolean;
   lazyMode: boolean;
   refreshing: boolean;
   authJsonExporting: boolean;
@@ -1545,17 +1552,20 @@ const AccountTableRow = memo(function AccountTableRow({
                                       .filter(Boolean)
                                       .join("\n")}
                                   >
-                                    <div className="flex min-h-6 flex-wrap items-center gap-1.5">
-                                      <StatusBadge
-                                        status={getAccountStatusBadgeStatus(account)}
-                                        detail={
-                                          account.status === "overload_paused"
-                                            ? undefined
-                                            : getAccountRateLimitWindow(account) ??
-                                              undefined
-                                        }
-                                        errorMessage={account.error_message}
-                                      />
+                                    <div className="flex min-h-6 flex-nowrap items-center gap-1.5 whitespace-nowrap">
+                                      <div className="inline-flex shrink-0 items-center gap-1.5">
+                                        <StatusBadge
+                                          status={getAccountStatusBadgeStatus(account)}
+                                          detail={
+                                            account.status === "overload_paused"
+                                              ? undefined
+                                              : getAccountRateLimitWindow(account) ??
+                                                undefined
+                                          }
+                                          errorMessage={account.error_message}
+                                        />
+                                        <AccountIntelligenceActions bar={intelligenceBar} accountID={account.id} accountName={account.email || account.name} />
+                                      </div>
                                       <UsingCreditsBadge account={account} />
                                       {account.status !== "overload_paused" && (
                                         <AccountStatusCountdown account={account} />
@@ -1565,6 +1575,7 @@ const AccountTableRow = memo(function AccountTableRow({
                                     <AccountHealthBar
                                       buckets={healthBuckets}
                                     />
+                                    <AccountIntelligenceBar bar={intelligenceBar} accountID={account.id} accountName={account.email || account.name} error={intelligenceError} />
                                   </div>
                                 )}
                               </TableCell>
@@ -1724,6 +1735,8 @@ const AccountCardItem = memo(function AccountCardItem({
   lazyMode,
   showEmailDomainTags,
   healthBuckets,
+  intelligenceBar,
+  intelligenceError,
   refreshing,
   authJsonExporting,
   variant,
@@ -1740,6 +1753,8 @@ const AccountCardItem = memo(function AccountCardItem({
   lazyMode: boolean;
   showEmailDomainTags: boolean;
   healthBuckets: AccountHealthBucket[] | undefined;
+  intelligenceBar?: IntelligenceBar;
+  intelligenceError?: boolean;
   refreshing: boolean;
   authJsonExporting: boolean;
   variant: AccountCardVariant;
@@ -1758,6 +1773,8 @@ const AccountCardItem = memo(function AccountCardItem({
       lazyMode={lazyMode}
       showEmailDomainTags={showEmailDomainTags}
       healthBuckets={healthBuckets}
+      intelligenceBar={intelligenceBar}
+      intelligenceError={intelligenceError}
       refreshing={refreshing}
       authJsonExporting={authJsonExporting}
       variant={variant}
@@ -3052,6 +3069,8 @@ export default function Accounts() {
       });
     return () => { cancelled = true; };
   }, [accountPageIDsKey, healthBarsReloadToken]);
+
+  const { bars: intelligenceBars, error: intelligenceBarsError } = useIntelligenceBars(accountPageIDsKey, healthBarsReloadToken);
 
   // 最近一次拉取 page-stats 的时间,供自动刷新节流(任何来源触发都会更新)。
   const pageStatsLoadedAtRef = useRef(0);
@@ -7576,6 +7595,8 @@ export default function Accounts() {
                         lazyMode={lazyMode}
                         showEmailDomainTags={showEmailDomainTags}
                         healthBuckets={healthBars[String(account.id)]}
+                          intelligenceBar={intelligenceBars[String(account.id)]}
+                          intelligenceError={intelligenceBarsError}
                         refreshing={refreshingIds.has(account.id)}
                         authJsonExporting={authJsonExportingIds.has(account.id)}
                         variant={
@@ -7857,6 +7878,8 @@ export default function Accounts() {
                           allGroups={allGroups}
                           proxyCtx={proxyBindingCtx}
                           healthBuckets={healthBars[String(account.id)]}
+                          intelligenceBar={intelligenceBars[String(account.id)]}
+                          intelligenceError={intelligenceBarsError}
                           lazyMode={lazyMode}
                           refreshing={refreshingIds.has(account.id)}
                           authJsonExporting={authJsonExportingIds.has(account.id)}
@@ -9262,6 +9285,8 @@ export default function Accounts() {
           )}
 
           <AccountDetailSheet
+            intelligenceBar={detailAccount ? intelligenceBars[String(detailAccount.id)] : undefined}
+            intelligenceError={intelligenceBarsError}
             account={detailAccount}
             groups={
               detailAccount
@@ -14007,6 +14032,8 @@ function AccountMobileCard({
   lazyMode,
   showEmailDomainTags,
   healthBuckets,
+  intelligenceBar,
+  intelligenceError,
   refreshing,
   authJsonExporting,
   variant = "mobile",
@@ -14043,6 +14070,8 @@ function AccountMobileCard({
   lazyMode: boolean;
   showEmailDomainTags: boolean;
   healthBuckets: AccountHealthBucket[] | undefined;
+  intelligenceBar?: IntelligenceBar;
+  intelligenceError?: boolean;
   refreshing: boolean;
   authJsonExporting: boolean;
   variant?: AccountCardVariant;
@@ -14227,7 +14256,7 @@ function AccountMobileCard({
                   {account.status !== "overload_paused" && (
                     <AccountStatusCountdown account={account} />
                   )}
-                  <AccountConcurrencyBadge account={account} />
+                  {overlayKind && <AccountConcurrencyBadge account={account} />}
                 </>
               )}
               <DaybreakBadge models={account.daybreak_models} />
@@ -14266,11 +14295,15 @@ function AccountMobileCard({
               {renderAccountStateOverlay(account, t, { compact: true, markerOnly: true })}
             </div>
           ) : !overlayKind && showColumn("status") ? (
-            <StatusBadge
-              status={getAccountStatusBadgeStatus(account)}
-              detail={getAccountRateLimitWindow(account) ?? undefined}
-              errorMessage={account.error_message}
-            />
+            <div className="inline-flex shrink-0 items-center gap-1.5">
+              <StatusBadge
+                status={getAccountStatusBadgeStatus(account)}
+                detail={getAccountRateLimitWindow(account) ?? undefined}
+                errorMessage={account.error_message}
+              />
+              <AccountIntelligenceActions bar={intelligenceBar} accountID={account.id} accountName={account.email || account.name} />
+              <AccountConcurrencyBadge account={account} />
+            </div>
           ) : null}
         </div>
       </header>
@@ -14337,6 +14370,7 @@ function AccountMobileCard({
                   </span>
                 </div>
                 <AccountHealthBar buckets={healthBuckets} />
+                <AccountIntelligenceBar bar={intelligenceBar} accountID={account.id} accountName={account.email || account.name} error={intelligenceError} />
               </div>
             </section>
           )}
