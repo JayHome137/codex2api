@@ -7595,8 +7595,8 @@ export default function Accounts() {
                         lazyMode={lazyMode}
                         showEmailDomainTags={showEmailDomainTags}
                         healthBuckets={healthBars[String(account.id)]}
-                          intelligenceBar={intelligenceBars[String(account.id)]}
-                          intelligenceError={intelligenceBarsError}
+                        intelligenceBar={intelligenceBars[String(account.id)]}
+                        intelligenceError={intelligenceBarsError}
                         refreshing={refreshingIds.has(account.id)}
                         authJsonExporting={authJsonExportingIds.has(account.id)}
                         variant={
