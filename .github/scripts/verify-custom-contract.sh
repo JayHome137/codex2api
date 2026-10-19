@@ -26,7 +26,8 @@ if git grep -n -E \
   ':!.github/workflows/upstream-sync.yml' \
   ':!.github/workflows/upstream-custom-sync.yml' \
   ':!.github/workflows/upstream-release.yml' \
-  ':!.github/scripts/verify-custom-contract.sh'; then
+  ':!.github/scripts/verify-custom-contract.sh' \
+  ':!.github/scripts/dispatch-pr-checks.sh'; then
   echo "Custom contract violation: upstream channel billing-rate implementation is present" >&2
   contract_failed=true
 fi

@@ -27,6 +27,9 @@ on:
         default: main
 permissions:
   contents: read
+  # workflow_dispatch jobs are invisible to branch protection. The publisher
+  # mirrors their conclusions onto commit statuses, which required checks accept.
+  statuses: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -183,3 +186,33 @@ jobs:
           args="$(bash .github/scripts/go-race-packages.sh '${{ matrix.name }}')"
           # shellcheck disable=SC2086
           go test -race -count=1 -timeout 12m $args
+
+  contract-paths:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Check custom contract path lists
+        run: bash .github/scripts/dispatch-pr-checks.sh --self-test
+
+  publish-check-status:
+    needs:
+      - custom-contract
+      - frontend
+      - golangci-lint
+      - test
+      - postgres-compatibility
+      - test-race
+    if: always() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Mirror job results to commit statuses
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/dispatch-pr-checks.sh --publish-statuses

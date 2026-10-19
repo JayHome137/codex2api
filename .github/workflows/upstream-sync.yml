@@ -33,9 +33,17 @@ jobs:
       - name: Create upstream baseline PR
         env:
           GH_TOKEN: ${{ github.token }}
+          # Optional. A fine-grained PAT or GitHub App token with contents,
+          # pull requests, and actions write. When set, the push is not made
+          # with GITHUB_TOKEN, so pull_request workflows run without the
+          # approval gate. When unset, workflow_dispatch results are mirrored
+          # onto commit statuses.
+          UPSTREAM_SYNC_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
+          source .github/scripts/dispatch-pr-checks.sh
+          configure_upstream_sync_token
 
           git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
           git fetch --no-tags origin \
@@ -94,15 +102,7 @@ jobs:
           # and a narrow source-map-js security patch preserved.
           preserve_dir=$(mktemp -d)
           trap 'rm -rf "$preserve_dir"' EXIT
-          for path in \
-            .github/workflows/release.yml \
-            .github/workflows/upstream-release.yml \
-            .github/workflows/upstream-sync.yml \
-            .github/workflows/upstream-custom-sync.yml \
-            .github/workflows/pr-check.yml \
-            .github/workflows/security-scan.yml \
-            .github/scripts/dispatch-pr-checks.sh \
-            .github/scripts/patch-source-map-js-lock.mjs; do
+          for path in "${custom_baseline_paths[@]}"; do
             mkdir -p "$preserve_dir/$(dirname "$path")"
             git show "refs/remotes/origin/${TARGET_BRANCH}:${path}" > "$preserve_dir/$path"
           done
@@ -110,15 +110,7 @@ jobs:
           baseline_branch="sync/baseline-${latest_tag}"
           git switch --create "$baseline_branch" "$expected_main_sha"
           git read-tree --reset -u "$upstream_sha"
-          for path in \
-            .github/workflows/release.yml \
-            .github/workflows/upstream-release.yml \
-            .github/workflows/upstream-sync.yml \
-            .github/workflows/upstream-custom-sync.yml \
-            .github/workflows/pr-check.yml \
-            .github/workflows/security-scan.yml \
-            .github/scripts/dispatch-pr-checks.sh \
-            .github/scripts/patch-source-map-js-lock.mjs; do
+          for path in "${custom_baseline_paths[@]}"; do
             mkdir -p "$(dirname "$path")"
             cp "$preserve_dir/$path" "$path"
           done
@@ -132,7 +124,6 @@ jobs:
             echo "The upstream release tree produces no baseline changes."
             exit 0
           fi
-          git commit -m "chore: sync upstream release ${latest_tag} into main"
 
           existing_pr=$(gh pr list \
             --repo "$GITHUB_REPOSITORY" \
@@ -141,14 +132,12 @@ jobs:
             --head "$baseline_branch" \
             --json number \
             --jq '.[0].number // empty')
-          existing_branch_sha=$(git ls-remote origin "refs/heads/${baseline_branch}" | awk 'NR == 1 { print $1 }')
-          if [[ -n "$existing_branch_sha" ]]; then
-            git push \
-              --force-with-lease="refs/heads/${baseline_branch}:${existing_branch_sha}" \
-              origin "${baseline_branch}:refs/heads/${baseline_branch}"
-          else
-            git push origin "${baseline_branch}:refs/heads/${baseline_branch}"
-          fi
+          # Same tree as the open baseline branch: do not force-push a new
+          # commit. A nightly rerun was invalidating green checks and timing
+          # out again before auto-merge could be enabled.
+          bash .github/scripts/dispatch-pr-checks.sh --reuse-or-push \
+            "$baseline_branch" \
+            "chore: sync upstream release ${latest_tag} into main"
 
           if [[ -z "$existing_pr" ]]; then
             pr_body_file=$(mktemp)
@@ -200,7 +189,7 @@ jobs:
               break
             fi
 
-            failed_checks=$(jq -r '[.statusCheckRollup[]? | select((.conclusion // "") | ascii_downcase | IN("failure", "cancelled", "timed_out", "action_required", "startup_failure")) | .name] | join(", ")' <<< "$pr_json")
+            failed_checks=$(bash .github/scripts/dispatch-pr-checks.sh --failed-required-checks "$pr_number" main)
             if [[ -n "$failed_checks" ]]; then
               echo "Upstream baseline PR has failed checks: ${failed_checks}" >&2
               exit 1

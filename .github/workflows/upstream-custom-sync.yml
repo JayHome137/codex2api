@@ -35,9 +35,14 @@ jobs:
       - name: Create custom synchronization PR
         env:
           GH_TOKEN: ${{ github.token }}
+          # See upstream-sync.yml. When unset, commit statuses stand in for
+          # the approval-gated pull_request workflows.
+          UPSTREAM_SYNC_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
+          source .github/scripts/dispatch-pr-checks.sh
+          configure_upstream_sync_token
 
           git fetch --no-tags origin \
             "refs/heads/main:refs/remotes/origin/main" \
@@ -75,9 +80,11 @@ jobs:
               echo "${main_tag} is already on ${TARGET_BRANCH}, but no merged PR identifies its validated source." >&2
               exit 1
             fi
+            # Run the workflow file from the custom branch. main's copy drifts
+            # behind codex2api-custom between baseline merges.
             gh workflow run 'Publish Custom Release' \
               --repo "$GITHUB_REPOSITORY" \
-              --ref main \
+              --ref "$TARGET_BRANCH" \
               -f "source_sha=${expected_custom_sha}" \
               -f "pr_number=${custom_pr}"
             {
@@ -90,62 +97,8 @@ jobs:
             exit 0
           fi
 
-          # On conflicts, retain these custom multiplier, billing,
-          # health-monitor, mobile-display and deployment-source paths.
-          custom_preserve_paths=(
-            .dockerignore
-            deploy.sh
-            docker-compose.yml
-            docker-compose.sqlite.yml
-            .github/workflows/pr-check.yml
-            .github/workflows/release.yml
-            .github/workflows/security-scan.yml
-            .github/workflows/upstream-release.yml
-            .github/workflows/upstream-sync.yml
-            .github/workflows/upstream-custom-sync.yml
-            admin/account_response_builder.go
-            admin/channel_monitor.go
-            admin/channel_monitor_probe.go
-            admin/channel_monitor_probe_test.go
-            admin/handler.go
-            admin/sub2_upstream_rate.go
-            admin/system_update.go
-            database/api_key_usage.go
-            database/billing.go
-            database/billing_test.go
-            database/channel_monitor.go
-            database/channel_monitor_test.go
-            database/image_user_billing_test.go
-            database/postgres.go
-            database/sqlite.go
-            database/sub2_upstream_billing.go
-            database/sub2_upstream_billing_test.go
-            database/usage_compaction_history_test.go
-            docs/sub2api-upstream-billing-phase1.md
-            frontend/src/api.ts
-            frontend/src/components/AccountQuickConfigSheet.tsx
-            frontend/src/components/ChannelMonitorConfigDialog.tsx
-            frontend/src/components/Layout.tsx
-            frontend/src/components/ui/tooltip.tsx
-            frontend/src/lib/accountQuickConfig.ts
-            frontend/src/locales/en.json
-            frontend/src/locales/zh.json
-            frontend/src/pages/APIKeyUsagePortal.tsx
-            frontend/src/pages/Accounts.tsx
-            frontend/src/pages/ChannelMonitor.tsx
-            frontend/src/pages/Usage.tsx
-            frontend/src/types.ts
-            .github/scripts/dispatch-pr-checks.sh
-            .github/scripts/patch-source-map-js-lock.mjs
-            proxy/handler.go
-            proxy/sub2_upstream_probe.go
-            proxy/sub2_upstream_probe_test.go
-          )
-          custom_remove_paths=(
-            frontend/src/lib/channelMonitorBilling.ts
-            frontend/src/lib/channelMonitorBilling.test.mjs
-          )
-
+          # Preserve and remove lists live in dispatch-pr-checks.sh so the
+          # release contract cannot drift from conflict resolution.
           is_custom_preserve_path() {
             local candidate="$1"
             local path
@@ -189,13 +142,12 @@ jobs:
           printf '%s\n' "$main_tag" > .upstream-release
           git add -u
           git add .upstream-release
-          if ! git diff --cached --quiet; then
-            if [[ "$merge_had_conflicts" == true ]]; then
-              git commit -m "chore: sync upstream release ${main_tag} preserving custom billing"
-            else
-              git commit -m "chore: sync upstream release ${main_tag}"
-            fi
+          if [[ "$merge_had_conflicts" == true ]]; then
+            sync_message="chore: sync upstream release ${main_tag} preserving custom billing"
+          else
+            sync_message="chore: sync upstream release ${main_tag}"
           fi
+          bash .github/scripts/dispatch-pr-checks.sh --reuse-or-push "$sync_branch" "$sync_message"
 
           custom_sha=$(git rev-parse HEAD)
           if [[ "$custom_sha" == "$main_sha" ]]; then
@@ -210,14 +162,6 @@ jobs:
             --head "$sync_branch" \
             --json number \
             --jq '.[0].number // empty')
-          existing_sync_sha=$(git ls-remote origin "refs/heads/${sync_branch}" | awk 'NR == 1 { print $1 }')
-          if [[ -n "$existing_sync_sha" ]]; then
-            git push \
-              --force-with-lease="refs/heads/${sync_branch}:${existing_sync_sha}" \
-              origin "${sync_branch}:refs/heads/${sync_branch}"
-          else
-            git push origin "${sync_branch}:refs/heads/${sync_branch}"
-          fi
 
           if [[ -z "$existing_pr" ]]; then
             pr_body_file=$(mktemp)
@@ -270,7 +214,7 @@ jobs:
               break
             fi
 
-            failed_checks=$(jq -r '[.statusCheckRollup[]? | select((.conclusion // "") | ascii_downcase | IN("failure", "cancelled", "timed_out", "action_required", "startup_failure")) | .name] | join(", ")' <<< "$pr_json")
+            failed_checks=$(bash .github/scripts/dispatch-pr-checks.sh --failed-required-checks "$pr_number" "$TARGET_BRANCH")
             if [[ -n "$failed_checks" ]]; then
               echo "Custom PR #${pr_number} has failed checks: ${failed_checks}" >&2
               exit 1
@@ -293,9 +237,11 @@ jobs:
             exit 1
           fi
 
+          # Run the workflow file from the custom branch so the release contract
+          # and release notes match the commit being published, not main.
           gh workflow run 'Publish Custom Release' \
             --repo "$GITHUB_REPOSITORY" \
-            --ref main \
+            --ref "$TARGET_BRANCH" \
             -f "source_sha=${merged_sha}" \
             -f "pr_number=${pr_number}"
 

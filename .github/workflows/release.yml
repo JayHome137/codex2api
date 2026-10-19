@@ -118,29 +118,38 @@ jobs:
           set -euo pipefail
 
           notes_file="$RUNNER_TEMP/codex2api-release-notes.md"
-          homepage_readme="$RUNNER_TEMP/codex2api-homepage-readme.md"
-          homepage_readme_zh="$RUNNER_TEMP/codex2api-homepage-readme-zh.md"
+          # main carries upstream's README, which has no fork maintenance
+          # section. The notes live on the custom commit being released.
+          maintenance_file="docs/custom-maintenance.md"
           version="$VERSION"
           previous_tag="$(git tag --sort=-version:refname \
             | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
             | grep -Fxv "$version" \
             | head -n 1 || true)"
 
-          git show origin/main:README.md > "$homepage_readme"
-          git show origin/main:README.zh-CN.md > "$homepage_readme_zh"
+          if [[ ! -f "$maintenance_file" ]]; then
+            echo "Release source is missing ${maintenance_file}; refusing to publish empty custom notes." >&2
+            exit 1
+          fi
 
           awk '
             /^## Custom maintenance$/ { in_section=1 }
             in_section && /^## / && $0 != "## Custom maintenance" { exit }
             in_section { print }
-          ' "$homepage_readme" > "$notes_file"
+          ' "$maintenance_file" > "$notes_file"
 
           printf '\n---\n\n' >> "$notes_file"
           awk '
             /^## 自定义维护内容$/ { in_section=1 }
             in_section && /^## / && $0 != "## 自定义维护内容" { exit }
             in_section { print }
-          ' "$homepage_readme_zh" >> "$notes_file"
+          ' "$maintenance_file" >> "$notes_file"
+
+          if ! grep -q '^## Custom maintenance$' "$notes_file" \
+            || ! grep -q '^## 自定义维护内容$' "$notes_file"; then
+            echo "Custom maintenance sections were empty in ${maintenance_file}." >&2
+            exit 1
+          fi
 
           printf '\n## Custom changes in this release\n\n' >> "$notes_file"
           custom_commits=""

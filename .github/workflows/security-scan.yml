@@ -21,6 +21,9 @@ on:
 
 permissions:
   contents: read
+  # Same status mirror as CI: workflow_dispatch security jobs must be visible
+  # to branch protection as commit statuses.
+  statuses: write
 
 concurrency:
   group: security-scan-${{ github.workflow }}-${{ github.ref }}
@@ -77,3 +80,19 @@ jobs:
         # 等价于 npm audit --omit=dev --audit-level=high,额外支持逐条 advisory
         # 的例外白名单(理由与复查时间写在脚本里)。
         run: node scripts/audit-gate.mjs
+
+  publish-check-status:
+    needs:
+      - backend-security
+      - frontend-security
+    if: always() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Mirror job results to commit statuses
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/dispatch-pr-checks.sh --publish-statuses
