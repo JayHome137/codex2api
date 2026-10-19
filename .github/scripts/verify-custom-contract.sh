@@ -5,6 +5,7 @@ set -euo pipefail
 custom_remove_paths=(
   frontend/src/lib/channelMonitorBilling.ts
   frontend/src/lib/channelMonitorBilling.test.mjs
+  README.zh-CN.md
 )
 
 contract_failed=false
@@ -59,8 +60,8 @@ required_contracts=(
   'frontend/src/components/ui/tooltip.tsx|ResponsiveTooltip }'
   'frontend/src/pages/APIKeyUsagePortal.tsx|<ResponsiveTooltip'
   'frontend/src/pages/Usage.tsx|<ResponsiveTooltip'
-  'README.md|## Custom maintenance'
-  'README.zh-CN.md|## 自定义维护内容'
+  'README.md|## 自定义维护内容'
+  'README.en.md|## Custom maintenance'
 )
 
 for contract in "${required_contracts[@]}"; do
