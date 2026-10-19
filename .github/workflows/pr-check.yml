@@ -27,9 +27,6 @@ on:
         default: main
 permissions:
   contents: read
-  # workflow_dispatch jobs are invisible to branch protection. The publisher
-  # mirrors their conclusions onto commit statuses, which required checks accept.
-  statuses: write
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -195,7 +192,18 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Check custom contract path lists
-        run: bash .github/scripts/dispatch-pr-checks.sh --self-test
+        run: |
+          set -euo pipefail
+          # Shallow clones have no upstream tag. Fetch the marker's tag so
+          # the release-contract diff is actually enforced on CI. Baseline
+          # branches lack custom-only files; the self-test switches to
+          # catalog-only mode there instead of failing the workflow.
+          marker=$(sed -n '1p' .upstream-release 2>/dev/null | tr -d '[:space:]' || true)
+          if [[ "$marker" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            git fetch --no-tags https://github.com/james-6-23/codex2api.git \
+              "refs/tags/${marker}:refs/tags/upstream-${marker}"
+          fi
+          bash .github/scripts/dispatch-pr-checks.sh --self-test
 
   publish-check-status:
     needs:
@@ -206,6 +214,13 @@ jobs:
       - postgres-compatibility
       - test-race
     if: always() && github.event_name == 'workflow_dispatch'
+    # Only this job may publish commit statuses. A workflow-level
+    # statuses: write token would let npm ci, Playwright, and go test
+    # forge the contexts that auto-merge treats as required checks.
+    permissions:
+      actions: read
+      contents: read
+      statuses: write
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

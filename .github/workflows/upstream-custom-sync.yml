@@ -12,6 +12,8 @@ permissions:
   actions: write
   contents: write
   pull-requests: write
+  # The waiter reads the combined commit status.
+  statuses: read
 
 concurrency:
   group: upstream-custom-sync
@@ -41,12 +43,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source .github/scripts/dispatch-pr-checks.sh
-          configure_upstream_sync_token
-
           git fetch --no-tags origin \
             "refs/heads/main:refs/remotes/origin/main" \
             "refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+          # Release promotion sources this same file from the custom checkout.
+          # Load it from origin/codex2api-custom here too, so conflict
+          # resolution cannot follow a stale copy that arrived via main.
+          catalog=$(mktemp)
+          git show "refs/remotes/origin/${TARGET_BRANCH}:.github/scripts/dispatch-pr-checks.sh" > "$catalog"
+          # shellcheck disable=SC1090
+          source "$catalog"
+          rm -f "$catalog"
+          configure_upstream_sync_token
 
           main_sha=$(git rev-parse refs/remotes/origin/main)
           expected_custom_sha=$(git rev-parse "refs/remotes/origin/${TARGET_BRANCH}")
@@ -91,7 +99,7 @@ jobs:
               echo "### Custom synchronization"
               echo
               echo "The custom branch already contains ${main_tag}; release publication was dispatched from its merged PR."
-              echo "- source commit: `${expected_custom_sha}`"
+              echo "- source commit: \`${expected_custom_sha}\`"
               echo "- PR: #${custom_pr}"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
@@ -138,6 +146,12 @@ jobs:
             git rm -f --ignore-unmatch -- "$path"
           done
 
+          # main's pre-fix copier does not put this script on the baseline.
+          # The worktree is the custom branch by this point, which has it.
+          # Restore from the custom ref if a merge resolution dropped it.
+          if [[ ! -f .github/scripts/verify-custom-contract.sh ]]; then
+            git checkout "refs/remotes/origin/${TARGET_BRANCH}" -- .github/scripts/verify-custom-contract.sh
+          fi
           bash .github/scripts/verify-custom-contract.sh
           printf '%s\n' "$main_tag" > .upstream-release
           git add -u
@@ -214,6 +228,9 @@ jobs:
               break
             fi
 
+            # Same rule as the baseline wait: only a failed required
+            # context aborts. Missing checks wait; auto-merge cannot
+            # complete until branch protection is satisfied.
             failed_checks=$(bash .github/scripts/dispatch-pr-checks.sh --failed-required-checks "$pr_number" "$TARGET_BRANCH")
             if [[ -n "$failed_checks" ]]; then
               echo "Custom PR #${pr_number} has failed checks: ${failed_checks}" >&2
@@ -251,7 +268,7 @@ jobs:
             echo "Prepared ${main_tag} as a protected custom PR."
             echo "- sync branch: \`${sync_branch}\`"
             echo "- PR: ${pr_url}"
-            echo "- merged commit: `${merged_sha}`"
+            echo "- merged commit: \`${merged_sha}\`"
             echo "- Release was explicitly dispatched after the required checks passed"
             echo "- custom behavior was protected on merge conflicts"
           } >> "$GITHUB_STEP_SUMMARY"

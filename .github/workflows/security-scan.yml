@@ -21,9 +21,6 @@ on:
 
 permissions:
   contents: read
-  # Same status mirror as CI: workflow_dispatch security jobs must be visible
-  # to branch protection as commit statuses.
-  statuses: write
 
 concurrency:
   group: security-scan-${{ github.workflow }}-${{ github.ref }}
@@ -86,6 +83,11 @@ jobs:
       - backend-security
       - frontend-security
     if: always() && github.event_name == 'workflow_dispatch'
+    # Same scoping as CI: only the publisher may write commit statuses.
+    permissions:
+      actions: read
+      contents: read
+      statuses: write
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -10,6 +10,10 @@ permissions:
   actions: write
   contents: write
   pull-requests: write
+  # The waiter reads the combined commit status. main's previous workflow
+  # file does not grant this; the script treats that 403 as "unreadable"
+  # and falls back to workflow job results.
+  statuses: read
 
 concurrency:
   group: upstream-release-sync
@@ -42,13 +46,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source .github/scripts/dispatch-pr-checks.sh
-          configure_upstream_sync_token
-
           git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
           git fetch --no-tags origin \
             "refs/heads/main:refs/remotes/origin/main" \
             "refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+          # Preserve and baseline lists are owned by codex2api-custom. main's
+          # copy of this script is the previous sync and would miss paths
+          # added on custom since then.
+          catalog=$(mktemp)
+          git show "refs/remotes/origin/${TARGET_BRANCH}:.github/scripts/dispatch-pr-checks.sh" > "$catalog"
+          # shellcheck disable=SC1090
+          source "$catalog"
+          rm -f "$catalog"
+          configure_upstream_sync_token
 
           expected_main_sha=$(git rev-parse refs/remotes/origin/main)
           expected_custom_sha=$(git rev-parse "refs/remotes/origin/${TARGET_BRANCH}")
@@ -189,6 +199,11 @@ jobs:
               break
             fi
 
+            # Abort only when a required context failed. Branch protection
+            # still blocks the merge. An approval-gated workflow shell has
+            # no required name, and an unrelated failing check must not
+            # cancel auto-merge. Pending required checks keep this loop
+            # waiting until GitHub merges or the attempt budget ends.
             failed_checks=$(bash .github/scripts/dispatch-pr-checks.sh --failed-required-checks "$pr_number" main)
             if [[ -n "$failed_checks" ]]; then
               echo "Upstream baseline PR has failed checks: ${failed_checks}" >&2

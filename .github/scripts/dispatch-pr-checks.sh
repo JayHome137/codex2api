@@ -11,11 +11,17 @@
 # maintainer clicks "Approve workflows to run". Those runs do not report
 # the required checks. workflow_dispatch jobs are also ignored by branch
 # protection (they never appear in the PR check rollup). Commit statuses
-# posted for the same check names do satisfy required checks. There is no
-# repository setting that turns the approval gate off. Set the
-# UPSTREAM_SYNC_TOKEN secret (fine-grained PAT or GitHub App installation
-# token with contents, pull requests, and actions write) to push and open
-# the PR as a normal writer so the pull_request workflows run by themselves.
+# posted for the same context do satisfy a required check of that name when
+# the rule lists the context and is not pinned to a pull_request check-run.
+# If a check run and a status share a context, GitHub requires both. The
+# approval-gated runs create no named check runs, so only the status is
+# present. There is no repository setting that turns the approval gate off.
+# Set the UPSTREAM_SYNC_TOKEN secret (fine-grained PAT or GitHub App
+# installation token with contents, pull requests, and actions write) to
+# push and open the PR as a normal writer so the pull_request workflows run
+# by themselves. The workflow file on main before this change does not grant
+# statuses: read; a 403 from the combined-status API falls back to the
+# workflow job conclusions.
 
 # Keep the custom version when merging main into codex2api-custom.
 # Every path here is also a release exception. package-lock is not listed:
@@ -69,6 +75,9 @@ custom_preserve_paths=(
   frontend/src/pages/Usage.tsx
   frontend/src/types.ts
   proxy/handler.go
+  # Same bytes on main and codex2api-custom, but both differ from upstream
+  # by the OTLP race guard. The release diff is against the upstream tag,
+  # and resetting main to upstream would drop the guard unless it is kept.
   proxy/native_oauth_routes_test.go
   proxy/official_model_pricing.go
   proxy/official_model_pricing_test.go
@@ -93,9 +102,13 @@ custom_release_exclude_paths=(
   "${custom_remove_paths[@]}"
 )
 
-# Copied from codex2api-custom onto the main baseline. The scheduled sync
-# runs the workflow file that is on main, so fork automation has to land
-# there. Runtime customizations are not copied.
+# Copied from codex2api-custom onto the main baseline once upstream-sync.yml
+# on main executes this catalog. The workflow file already on main still
+# copies only eight paths and omits verify-custom-contract.sh and
+# cleanup-sync-branch.yml. v3.1.1 still completes: the waiter and the
+# status publisher live in those eight files, custom sync loads this
+# catalog from origin/codex2api-custom, and the contract script runs from
+# the custom worktree. Runtime customizations are not copied.
 custom_baseline_paths=(
   .github/scripts/dispatch-pr-checks.sh
   .github/scripts/patch-source-map-js-lock.mjs
@@ -174,6 +187,18 @@ is_success_state() {
   esac
 }
 
+# Latest conclusion or state for a required context. Check runs use
+# .name/.conclusion; commit statuses use .context/.state.
+check_state_in_rollup() {
+  local rollup_json="$1"
+  local name="$2"
+  jq -r --arg name "$name" '
+    [.[]?
+      | select((.name // .context // "") == $name)
+      | (.conclusion // .state // "")]
+    | last // ""' <<<"$rollup_json"
+}
+
 # Print required checks from a rollup JSON array whose conclusion/state is a
 # hard failure. Approval-gated workflow shells are ignored unless their name
 # is itself a required check.
@@ -182,11 +207,7 @@ failed_required_from_rollup_json() {
   shift
   local failed_checks=() check state joined=""
   for check in "$@"; do
-    state=$(jq -r --arg name "$check" '
-      [.[]?
-        | select((.name // .context // "") == $name)
-        | (.conclusion // .state // "")]
-      | last // ""' <<<"$rollup_json")
+    state=$(check_state_in_rollup "$rollup_json" "$check")
     if is_hard_failure "$state"; then
       failed_checks+=("$check")
     fi
@@ -226,6 +247,13 @@ reuse_or_push_branch() {
     existing_tree=$(git rev-parse "refs/remotes/origin/${branch}^{tree}")
     if [[ "$existing_tree" == "$candidate_tree" ]]; then
       echo "Remote ${branch} already has this tree (${existing_sha}); not pushing a new commit."
+      # upstream-custom-sync calls this while `git merge --no-commit` is
+      # still open. git switch refuses with "cannot switch branch while
+      # merging"; merge --quit drops MERGE_HEAD and leaves the index, then
+      # the forced switch selects the existing remote commit.
+      if [[ -f "$(git rev-parse --git-path MERGE_HEAD)" ]]; then
+        git merge --quit
+      fi
       git switch -f -C "$branch" "refs/remotes/origin/${branch}"
       return 0
     fi
@@ -284,15 +312,25 @@ publish_statuses() {
 }
 
 self_test() {
-  local self_test_failed=0 path candidate count
+  local self_test_failed=0 path candidate count custom_tree=0
+  local audit_ref="" marker found
+  local -a missing_paths=()
   local -A seen=()
+  # main and sync/baseline-* contain upstream plus the automation files.
+  # Requiring custom-only paths there fails CI, and the waiter treats any
+  # non-success CI conclusion as fatal.
+  if [[ -f admin/sub2_upstream_rate.go && -f docs/custom-maintenance.md && -f .github/scripts/verify-custom-contract.sh ]]; then
+    custom_tree=1
+  else
+    echo "Catalog-only self-test: this tree is not codex2api-custom, so custom-only files are not required."
+  fi
   for path in "${custom_preserve_paths[@]}"; do
     if [[ -n "${seen[$path]:-}" ]]; then
       echo "duplicate preserve path: $path" >&2
       self_test_failed=1
     fi
     seen[$path]=1
-    if [[ ! -e "$path" ]]; then
+    if [[ "$custom_tree" == 1 && ! -e "$path" ]]; then
       echo "preserve path is missing from the tree: $path" >&2
       self_test_failed=1
     fi
@@ -302,7 +340,7 @@ self_test() {
     fi
   done
   for path in "${custom_remove_paths[@]}"; do
-    if [[ -e "$path" ]]; then
+    if [[ "$custom_tree" == 1 && -e "$path" ]]; then
       echo "removed custom path still exists: $path" >&2
       self_test_failed=1
     fi
@@ -337,7 +375,7 @@ self_test() {
     fi
   done
   for path in "${custom_baseline_paths[@]}"; do
-    if [[ ! -e "$path" ]]; then
+    if [[ "$custom_tree" == 1 && ! -e "$path" ]]; then
       echo "baseline automation path is missing: $path" >&2
       self_test_failed=1
     fi
@@ -346,10 +384,12 @@ self_test() {
       self_test_failed=1
     fi
   done
-  if ! grep -q '^## Custom maintenance$' docs/custom-maintenance.md \
-    || ! grep -q '^## 自定义维护内容$' docs/custom-maintenance.md; then
-    echo "docs/custom-maintenance.md is missing a release-note heading" >&2
-    self_test_failed=1
+  if [[ "$custom_tree" == 1 ]]; then
+    if ! grep -q '^## Custom maintenance$' docs/custom-maintenance.md \
+      || ! grep -q '^## 自定义维护内容$' docs/custom-maintenance.md; then
+      echo "docs/custom-maintenance.md is missing a release-note heading" >&2
+      self_test_failed=1
+    fi
   fi
   count=$(printf '%s\n' "${required_ci_check_names[@]}" | sort | uniq -d | wc -l | tr -d ' ')
   if [[ "$count" != "0" ]]; then
@@ -377,20 +417,38 @@ self_test() {
     echo "status parser returned '${found}', expected 'test'" >&2
     self_test_failed=1
   fi
+  found=$(check_state_in_rollup '[{"context":"custom-contract","state":"success"}]' custom-contract)
+  if [[ "$found" != "success" ]]; then
+    echo "context rollup parser returned '${found}', expected success" >&2
+    self_test_failed=1
+  fi
 
-  if git rev-parse --verify --quiet upstream-v3.1.0 >/dev/null; then
-    local missing=()
+  if [[ -f .upstream-release ]]; then
+    marker=$(sed -n '1p' .upstream-release | tr -d '[:space:]')
+    if [[ "$marker" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && git rev-parse --verify --quiet "refs/tags/upstream-${marker}^{commit}" >/dev/null; then
+      audit_ref="refs/tags/upstream-${marker}^{commit}"
+    fi
+  fi
+  if [[ -z "$audit_ref" ]]; then
+    marker=$(git tag --list 'upstream-v*' --sort=-v:refname | head -n 1 || true)
+    if [[ -n "$marker" ]]; then
+      audit_ref="refs/tags/${marker}^{commit}"
+    fi
+  fi
+  if [[ -n "$audit_ref" ]]; then
     while IFS= read -r path; do
       [[ -z "$path" ]] && continue
       if ! path_in_list "$path" "${custom_release_exclude_paths[@]}"; then
-        missing+=("$path")
+        missing_paths+=("$path")
       fi
-    done < <(git diff --name-only upstream-v3.1.0 HEAD)
-    if ((${#missing[@]} > 0)); then
-      echo "HEAD differs from upstream-v3.1.0 outside the release contract:" >&2
-      printf ' - %s\n' "${missing[@]}" >&2
+    done < <(git diff --name-only "$audit_ref" HEAD)
+    if ((${#missing_paths[@]} > 0)); then
+      echo "HEAD differs from ${audit_ref} outside the release contract:" >&2
+      printf ' - %s\n' "${missing_paths[@]}" >&2
       self_test_failed=1
     fi
+  else
+    echo "No local upstream-v* tag; skipping release-contract diff audit."
   fi
 
   if [[ "$self_test_failed" != "0" ]]; then
@@ -409,9 +467,11 @@ note_approval_gate() {
 The pull_request CI and Security Scan runs are approval-gated. GitHub creates
 them with conclusion action_required and zero jobs when GITHUB_TOKEN opens or
 updates the PR, and workflow_dispatch jobs do not satisfy branch protection.
-Commit statuses mirrored from those jobs do. No repository setting disables
-this gate. A maintainer can click "Approve workflows to run", or set the
-UPSTREAM_SYNC_TOKEN secret so the sync push is not authenticated as GITHUB_TOKEN.
+Commit statuses mirrored from those jobs do, when the required-check rule
+lists each context and is not pinned to a pull_request check-run. No
+repository setting disables this gate. A maintainer can click "Approve
+workflows to run", or set the UPSTREAM_SYNC_TOKEN secret so the sync push
+is not authenticated as GITHUB_TOKEN.
 EOF
 }
 
@@ -457,11 +517,7 @@ rollup_json() {
 rollup_is_green() {
   local rollup="$1" check state
   for check in "${required_checks[@]}"; do
-    state=$(jq -r --arg name "$check" '
-      [.[]?
-        | select((.name // .context // "") == $name)
-        | (.conclusion // .state // "")]
-      | last // ""' <<<"$rollup")
+    state=$(check_state_in_rollup "$rollup" "$check")
     if ! is_success_state "$state"; then
       return 1
     fi
@@ -469,11 +525,61 @@ rollup_is_green() {
   return 0
 }
 
+# STATUS_READ_RC: 0 JSON is in STATUS_JSON, 2 token cannot read statuses,
+# 1 some other error (already logged).
+load_status_snapshot() {
+  local err_file
+  err_file=$(mktemp)
+  STATUS_JSON=""
+  if STATUS_JSON=$(gh api "repos/${repository}/commits/${head_sha}/status" 2>"$err_file"); then
+    rm -f "$err_file"
+    STATUS_READ_RC=0
+    return 0
+  fi
+  if grep -Eq 'HTTP 403|Resource not accessible' "$err_file"; then
+    STATUS_READ_RC=2
+    rm -f "$err_file"
+    return 2
+  fi
+  cat "$err_file" >&2
+  rm -f "$err_file"
+  STATUS_READ_RC=1
+  return 1
+}
+
 statuses_are_green() {
-  local statuses_json missing
-  statuses_json=$(gh api "repos/${repository}/commits/${head_sha}/status")
-  missing=$(missing_success_statuses "$statuses_json" "${required_checks[@]}")
+  local rc=0 missing
+  load_status_snapshot || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    return 1
+  fi
+  missing=$(missing_success_statuses "$STATUS_JSON" "${required_checks[@]}")
   [[ -z "$missing" ]]
+}
+
+# True when the latest workflow_dispatch of CI and Security Scan succeeded
+# and every required check name has a successful job. Used when this token
+# cannot read commit statuses (the workflow file currently on main).
+required_dispatch_jobs_cover() {
+  local runs_json="$1" workflow run_json run_id jobs_json name conclusion status check
+  local -A ok=()
+  for workflow in "CI" "Security Scan"; do
+    run_json=$(latest_run "$runs_json" "$workflow" workflow_dispatch)
+    [[ -n "$run_json" ]] || return 1
+    conclusion=$(jq -r '.conclusion // empty' <<<"$run_json")
+    status=$(jq -r '.status // empty' <<<"$run_json")
+    [[ "$status" == "completed" && "$conclusion" == "success" ]] || return 1
+    run_id=$(jq -r '.id' <<<"$run_json")
+    jobs_json=$(gh api "repos/${repository}/actions/runs/${run_id}/jobs?per_page=100")
+    while IFS=$'\t' read -r name conclusion; do
+      [[ "$conclusion" == "success" ]] || continue
+      ok["$name"]=1
+    done < <(jq -r '.jobs[] | [.name, (.conclusion // "")] | @tsv' <<<"$jobs_json")
+  done
+  for check in "${required_checks[@]}"; do
+    [[ -n "${ok[$check]:-}" ]] || return 1
+  done
+  return 0
 }
 
 wait_for_pr_checks() {
@@ -483,7 +589,8 @@ wait_for_pr_checks() {
   local -A previous_dispatch_ids=()
   local -A reuse_dispatch=()
   local -A announced_dispatch=()
-  local attempt dispatch_green_streak=0 all_dispatch_done run_id
+  local -A redispatch_reason=()
+  local attempt dispatch_green_streak=0 all_dispatch_done run_id status_redispatches=0 status_rc=0 missing
 
   if [[ $# -ne 4 ]]; then
     echo "Usage: $0 <head-branch> <head-sha> <base-branch> <pr-number>" >&2
@@ -554,17 +661,32 @@ wait_for_pr_checks() {
       previous_dispatch_ids["$workflow"]=$(jq -r '.id // empty' <<<"${run_json:-null}")
       status=$(jq -r '.status // empty' <<<"${run_json:-null}")
       conclusion=$(jq -r '.conclusion // empty' <<<"${run_json:-null}")
-      # A second workflow_dispatch on the same ref cancels the in-progress one.
-      if [[ "$status" == "queued" || "$status" == "in_progress" || "$status" == "waiting" || "$status" == "pending" || "$status" == "requested" || ( "$status" == "completed" && "$conclusion" == "success" ) ]]; then
+      # A second workflow_dispatch on the same ref cancels an in-progress one.
+      # A completed success is not reusable when its statuses are still
+      # missing: the next sync would otherwise keep that run and exit forever.
+      if [[ "$status" == "queued" || "$status" == "in_progress" || "$status" == "waiting" || "$status" == "pending" || "$status" == "requested" ]]; then
         reuse_dispatch["$workflow"]=1
+      elif [[ "$status" == "completed" && "$conclusion" == "success" ]]; then
+        reuse_dispatch["$workflow"]=0
+        redispatch_reason["$workflow"]=1
       else
         reuse_dispatch["$workflow"]=0
       fi
     done
+    if [[ "${STATUS_READ_RC:-1}" -eq 2 ]] && required_dispatch_jobs_cover "$runs_json"; then
+      echo "Commit status API is forbidden for this token. Required workflow jobs already succeeded; using those results."
+      return 0
+    fi
     if [[ "${reuse_dispatch[CI]:-0}" != 1 ]]; then
+      if [[ -n "${redispatch_reason[CI]:-}" ]]; then
+        echo "CI already succeeded on ${head_sha} but required commit statuses are missing; dispatching again."
+      fi
       gh workflow run CI --repo "$repository" --ref "$head_branch" -f "target_branch=${base_branch}"
     fi
     if [[ "${reuse_dispatch[Security Scan]:-0}" != 1 ]]; then
+      if [[ -n "${redispatch_reason[Security Scan]:-}" ]]; then
+        echo "Security Scan already succeeded on ${head_sha} but required commit statuses are missing; dispatching again."
+      fi
       gh workflow run "Security Scan" --repo "$repository" --ref "$head_branch"
     fi
   fi
@@ -642,15 +764,43 @@ wait_for_pr_checks() {
         dispatch_green_streak=0
       fi
       # The publisher job is part of the workflow run, so statuses should exist
-      # once the run is green. Allow a short API lag, then fail instead of
-      # waiting out the whole timeout on a rollup that will stay empty.
+      # once the run is green. Allow a short API lag, then re-dispatch.
+      # Exiting here reused the same successful run on the next sync and
+      # never published the missing statuses.
       if [[ "$dispatch_green_streak" -ge 6 ]]; then
-        statuses_json=$(gh api "repos/${repository}/commits/${head_sha}/status")
-        missing=$(missing_success_statuses "$statuses_json" "${required_checks[@]}")
-        if [[ -n "$missing" ]]; then
-          echo "workflow_dispatch succeeded but these required commit statuses are not success: ${missing//$'\n'/, }" >&2
+        status_rc=0
+        load_status_snapshot || status_rc=$?
+        if [[ "$status_rc" -eq 2 ]]; then
+          if required_dispatch_jobs_cover "$runs_json"; then
+            echo "Commit status API is forbidden for this token. Required workflow jobs succeeded; using those results."
+            return 0
+          fi
+          echo "Commit status API is forbidden and the workflow jobs do not cover every required check." >&2
           note_approval_gate
           exit 1
+        fi
+        if [[ "$status_rc" -eq 0 ]]; then
+          missing=$(missing_success_statuses "$STATUS_JSON" "${required_checks[@]}")
+          if [[ -z "$missing" ]]; then
+            echo "Required commit statuses are satisfied on ${head_sha}."
+            return 0
+          fi
+          if [[ "$status_redispatches" -ge 2 ]]; then
+            echo "workflow_dispatch succeeded but these required commit statuses are not success: ${missing//$'\n'/, }" >&2
+            note_approval_gate
+            exit 1
+          fi
+          status_redispatches=$((status_redispatches + 1))
+          dispatch_green_streak=0
+          echo "Required commit statuses still missing (${missing//$'\n'/, }); re-dispatching CI and Security Scan (attempt ${status_redispatches}/2)."
+          for workflow in "${workflows[@]}"; do
+            run_json=$(latest_run "$runs_json" "$workflow" workflow_dispatch)
+            previous_dispatch_ids["$workflow"]=$(jq -r '.id // empty' <<<"${run_json:-null}")
+            reuse_dispatch["$workflow"]=0
+            unset "announced_dispatch[$workflow]"
+          done
+          gh workflow run CI --repo "$repository" --ref "$head_branch" -f "target_branch=${base_branch}"
+          gh workflow run "Security Scan" --repo "$repository" --ref "$head_branch"
         fi
       fi
     fi

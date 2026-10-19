@@ -19,6 +19,8 @@ permissions:
   actions: read
   contents: write
   pull-requests: read
+  # statusCheckRollup includes commit statuses (.context / .state).
+  statuses: read
 
 concurrency:
   # A single release lane prevents two custom commits from racing for the
@@ -74,10 +76,12 @@ jobs:
               exit 1
             fi
 
+            rollup=$(jq -c '.statusCheckRollup // []' <<<"$pr_json")
             for check in "${required_custom_check_names[@]}"; do
-              conclusion=$(jq -r --arg name "$check" \
-                '[.statusCheckRollup[]? | select(.name == $name) | (.conclusion // .state // "")] | last // ""' \
-                <<< "$pr_json")
+              # Check runs expose .name/.conclusion. Mirrored commit statuses
+              # expose .context/.state. Matching only .name reports every
+              # mirrored success as missing.
+              conclusion=$(check_state_in_rollup "$rollup" "$check")
               if [[ "${conclusion,,}" != "success" ]]; then
                 echo "Required check ${check} did not pass for PR #${PR_NUMBER}: ${conclusion:-missing}." >&2
                 exit 1
