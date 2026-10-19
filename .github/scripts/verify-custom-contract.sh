@@ -15,6 +15,8 @@ for path in "${custom_remove_paths[@]}"; do
   fi
 done
 
+# Test mocks may name the removed billing-rate API. Production code under
+# admin/, database/, frontend/src, and proxy/ must not.
 if git grep -n -E \
   -e 'ChannelMonitorBilling' \
   -e 'channelMonitorBilling' \
@@ -23,6 +25,13 @@ if git grep -n -E \
   -e 'RecordChannelMonitorBilling' \
   -e '/channel-monitors/billing-rates' \
   -- ':!CHANGELOG.md' ':!docs/**' ':!test-results/**' \
+  ':!frontend/tests/**' \
+  ':!**/*_test.go' \
+  ':!**/*.test.mjs' \
+  ':!**/*.test.ts' \
+  ':!**/*.test.tsx' \
+  ':!**/*.spec.ts' \
+  ':!**/*.spec.tsx' \
   ':!.github/workflows/upstream-sync.yml' \
   ':!.github/workflows/upstream-custom-sync.yml' \
   ':!.github/workflows/upstream-release.yml' \
