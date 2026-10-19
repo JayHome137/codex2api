@@ -118,29 +118,49 @@ jobs:
           set -euo pipefail
 
           notes_file="$RUNNER_TEMP/codex2api-release-notes.md"
-          homepage_readme="$RUNNER_TEMP/codex2api-homepage-readme.md"
-          homepage_readme_zh="$RUNNER_TEMP/codex2api-homepage-readme-zh.md"
+          # main carries upstream's README, which has no fork maintenance
+          # section. The notes live on the custom commit being released.
+          maintenance_file="docs/custom-maintenance.md"
           version="$VERSION"
           previous_tag="$(git tag --sort=-version:refname \
             | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
             | grep -Fxv "$version" \
             | head -n 1 || true)"
 
-          git show origin/main:README.md > "$homepage_readme"
-          git show origin/main:README.zh-CN.md > "$homepage_readme_zh"
+          if [[ ! -f "$maintenance_file" ]]; then
+            # Tags cut before this file existed must still be rebuildable.
+            # A present file with a missing heading is a broken custom tree
+            # and still fails the release.
+            echo "Release source has no ${maintenance_file}; publishing without fork maintenance notes." >&2
+            printf '%s\n' \
+              '## Custom maintenance' \
+              '' \
+              '_This release commit has no docs/custom-maintenance.md._' \
+              '' \
+              '## 自定义维护内容' \
+              '' \
+              '_该发布提交没有 docs/custom-maintenance.md。_' \
+              > "$notes_file"
+          else
+            awk '
+              /^## Custom maintenance$/ { in_section=1 }
+              in_section && /^## / && $0 != "## Custom maintenance" { exit }
+              in_section { print }
+            ' "$maintenance_file" > "$notes_file"
 
-          awk '
-            /^## Custom maintenance$/ { in_section=1 }
-            in_section && /^## / && $0 != "## Custom maintenance" { exit }
-            in_section { print }
-          ' "$homepage_readme" > "$notes_file"
+            printf '\n---\n\n' >> "$notes_file"
+            awk '
+              /^## 自定义维护内容$/ { in_section=1 }
+              in_section && /^## / && $0 != "## 自定义维护内容" { exit }
+              in_section { print }
+            ' "$maintenance_file" >> "$notes_file"
 
-          printf '\n---\n\n' >> "$notes_file"
-          awk '
-            /^## 自定义维护内容$/ { in_section=1 }
-            in_section && /^## / && $0 != "## 自定义维护内容" { exit }
-            in_section { print }
-          ' "$homepage_readme_zh" >> "$notes_file"
+            if ! grep -q '^## Custom maintenance$' "$notes_file" \
+              || ! grep -q '^## 自定义维护内容$' "$notes_file"; then
+              echo "Custom maintenance sections were empty in ${maintenance_file}." >&2
+              exit 1
+            fi
+          fi
 
           printf '\n## Custom changes in this release\n\n' >> "$notes_file"
           custom_commits=""
