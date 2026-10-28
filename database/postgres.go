@@ -1885,7 +1885,7 @@ type APIKeyLimits struct {
 	// 而不是直接把 400 透传给下游。默认关闭。
 	AutoCompactOnOverflow bool `json:"auto_compact_overflow,omitempty"`
 	// AllowLive 为 true 时，该 Key 可以使用 ChatGPT Live（/v1/live 与
-	// /backend-api/codex/realtime/calls）。默认关闭。
+	// /backend-api/codex/realtime/calls）。管理端新建 auto/codex Key 时默认开启。
 	AllowLive bool `json:"allow_live,omitempty"`
 	// UpstreamChannel 限定该 Key 的请求只调度到指定上游渠道的账号：
 	//   - ""/auto: 不限（默认，按模型路由）
@@ -1898,6 +1898,10 @@ type APIKeyLimits struct {
 	// 与上面的 Cost/Token 限额不同，它只统计该 Key 打到对应 scope 的用量，超额后默认
 	// 把该 scope 的账号从候选池剔除（自动落到其它分组），详见 APIKeyScopeLimit。
 	ScopeLimits []APIKeyScopeLimit `json:"scope_limits,omitempty"`
+	// ExternalScheduler 为 true 时，该 Key 由外部调度器管理（issue #831）：每个执行请求
+	// 必须用 X-Codex2API-Account-ID 指定账号，网关只在该账号上执行，不做内部选号、
+	// 换号或重试，也不以冷却 / 并发 / 自动暂停等内部调度判断拒绝请求。默认关闭。
+	ExternalScheduler bool `json:"external_scheduler,omitempty"`
 }
 
 // 图片工具策略取值。
@@ -1978,6 +1982,7 @@ func (l APIKeyLimits) IsZero() bool {
 		!l.DisableImageGeneration &&
 		!l.AutoCompactOnOverflow &&
 		!l.AllowLive &&
+		!l.ExternalScheduler &&
 		l.ResolveImageGenerationPolicy() == ImageGenerationPolicyAllow &&
 		l.ResolveUpstreamChannel() == UpstreamChannelAuto
 }
@@ -8811,6 +8816,24 @@ func (db *DB) InsertAccountWithCredentials(ctx context.Context, name string, cre
 		`INSERT INTO accounts (name, credentials, proxy_url) VALUES ($1, $2, $3)`,
 		credentials,
 		name, credJSON, proxyURL,
+	)
+}
+
+// InsertPendingAccountWithCredentials atomically saves a disabled account and
+// its review metadata together with the credential family.
+func (db *DB) InsertPendingAccountWithCredentials(ctx context.Context, name string, credentials map[string]interface{}, proxyURL, note string, tags []string) (int64, error) {
+	if credentials == nil {
+		credentials = map[string]interface{}{}
+	}
+	credJSON, err := json.Marshal(encryptSensitiveCredentials(credentials))
+	if err != nil {
+		return 0, err
+	}
+	return db.insertAccountRowWithFamily(ctx,
+		`INSERT INTO accounts (name, credentials, proxy_url, enabled, note, tags) VALUES ($1, $2, $3, FALSE, $4, $5::jsonb) RETURNING id`,
+		`INSERT INTO accounts (name, credentials, proxy_url, enabled, note, tags) VALUES ($1, $2, $3, FALSE, $4, $5)`,
+		credentials,
+		name, credJSON, proxyURL, note, encodeTagsJSON(tags),
 	)
 }
 

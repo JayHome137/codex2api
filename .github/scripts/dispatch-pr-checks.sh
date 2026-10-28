@@ -100,6 +100,8 @@ custom_remove_paths=(
 # channel-monitor billing files that the fork deletes.
 custom_release_exclude_paths=(
   "${custom_preserve_paths[@]}"
+  go.mod
+  go.sum
   .upstream-release
   frontend/package-lock.json
   "${custom_remove_paths[@]}"
