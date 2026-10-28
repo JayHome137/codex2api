@@ -121,6 +121,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           merge_had_conflicts=false
+          preserved_conflict_paths=()
+          preserved_report=$(mktemp)
           if ! git merge --no-edit --no-commit --no-ff "$main_sha"; then
             merge_had_conflicts=true
             # A conflicted merge can leave this runner's index lock behind
@@ -129,9 +131,32 @@ jobs:
             if [[ -f .git/index.lock ]]; then
               rm -f .git/index.lock
             fi
+            merge_base=$(git merge-base HEAD "$main_sha")
             mapfile -t conflicted_paths < <(git diff --name-only --diff-filter=U)
             for path in "${conflicted_paths[@]}"; do
               if is_custom_preserve_path "$path"; then
+                # Custom content stays. Record the upstream delta this drops
+                # so a reviewer can put non-conflicting additions back.
+                preserved_conflict_paths+=("$path")
+                upstream_delta=$(git diff --no-color --unified=3 "$merge_base" "$main_sha" -- "$path" || true)
+                {
+                  echo "### \`$path\`"
+                  echo
+                  echo "Kept the custom file. Upstream changes since the merge base that were not applied:"
+                  echo
+                  if [[ -z "$upstream_delta" ]]; then
+                    echo "_No textual upstream delta._"
+                  else
+                    echo '```diff'
+                    printf '%s\n' "${upstream_delta:0:8000}"
+                    if [[ "${#upstream_delta}" -gt 8000 ]]; then
+                      echo
+                      echo "... diff truncated ..."
+                    fi
+                    echo '```'
+                  fi
+                  echo
+                } >> "$preserved_report"
                 git checkout --ours -- "$path" 2>/dev/null || git rm -f --ignore-unmatch -- "$path"
               else
                 git checkout --theirs -- "$path" 2>/dev/null || git rm -f --ignore-unmatch -- "$path"
@@ -190,6 +215,15 @@ jobs:
           - The custom contract, CI, and security checks must pass before merge.
           - The custom Release is published only after this PR is merged.
           EOF
+            if ((${#preserved_conflict_paths[@]} > 0)); then
+              {
+                echo
+                echo "Preserve-list files conflicted. Custom content was kept whole, and this PR will not auto-merge or publish a release:"
+                for path in "${preserved_conflict_paths[@]}"; do
+                  echo "- \`$path\`"
+                done
+              } >> "$pr_body_file"
+            fi
             pr_url=$(gh pr create \
               --repo "$GITHUB_REPOSITORY" \
               --base "$TARGET_BRANCH" \
@@ -215,7 +249,40 @@ jobs:
             echo "expected=${custom_sha} actual=${pr_head_sha:-<empty>}" >&2
             exit 1
           fi
+          if ((${#preserved_conflict_paths[@]} > 0)); then
+            # Checks still run so the open PR is reviewable. Auto-merge and
+            # Publish Custom Release stay off until a person merges it.
+            gh label create preserve-conflict \
+              --repo "$GITHUB_REPOSITORY" \
+              --description "Preserve-list merge kept custom and dropped upstream hunks" \
+              --color B60205 >/dev/null 2>&1 || true
+            gh pr edit "$pr_number" --repo "$GITHUB_REPOSITORY" --add-label preserve-conflict >/dev/null 2>&1 || true
+            comment_file=$(mktemp)
+            {
+              echo "Preserve-list files conflicted. Each file below was kept from \`${TARGET_BRANCH}\` so custom content is unchanged."
+              echo
+              echo "This PR will not auto-merge, and no release will be published until it is merged by a reviewer."
+              echo
+              cat "$preserved_report"
+            } > "$comment_file"
+            gh pr comment "$pr_number" --repo "$GITHUB_REPOSITORY" --body-file "$comment_file"
+            bash .github/scripts/dispatch-pr-checks.sh "$sync_branch" "$pr_head_sha" "$TARGET_BRANCH" "$pr_number"
+            {
+              echo "### Custom synchronization"
+              echo
+              echo "Opened ${pr_url} for review because preserve-list files conflicted."
+              echo "- PR: ${pr_url}"
+              echo "- files: ${preserved_conflict_paths[*]}"
+              echo "- auto-merge: withheld"
+              echo "- release: not dispatched"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           bash .github/scripts/dispatch-pr-checks.sh "$sync_branch" "$pr_head_sha" "$TARGET_BRANCH" "$pr_number"
+          # --delete-branch removes this PR's head (sync/upstream-*) only.
+          # The base is codex2api-custom and is not deleted.
+          # cleanup-sync-branch.yml is the backstop for every other same-repo
+          # head, including cursor/*, and it refuses main and codex2api-custom.
           gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --auto --merge --delete-branch
 
           merged_sha=""

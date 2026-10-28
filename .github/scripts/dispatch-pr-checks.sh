@@ -38,6 +38,8 @@ custom_preserve_paths=(
   .github/workflows/upstream-custom-sync.yml
   .github/workflows/upstream-release.yml
   .github/workflows/upstream-sync.yml
+  README.md
+  README.en.md
   admin/account_response_builder.go
   admin/channel_monitor.go
   admin/channel_monitor_probe.go
@@ -90,6 +92,7 @@ custom_preserve_paths=(
 custom_remove_paths=(
   frontend/src/lib/channelMonitorBilling.ts
   frontend/src/lib/channelMonitorBilling.test.mjs
+  README.zh-CN.md
 )
 
 # Allowed to differ from the upstream release tag. Includes preserved
@@ -367,7 +370,9 @@ self_test() {
     proxy/official_model_pricing.go \
     proxy/official_model_pricing_test.go \
     proxy/native_oauth_routes_test.go \
-    docs/custom-maintenance.md
+    docs/custom-maintenance.md \
+    README.md \
+    README.en.md
   do
     if ! path_in_list "$path" "${custom_preserve_paths[@]}"; then
       echo "critical custom path is not preserved: $path" >&2

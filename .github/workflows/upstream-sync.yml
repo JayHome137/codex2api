@@ -188,6 +188,10 @@ jobs:
             exit 1
           fi
           bash .github/scripts/dispatch-pr-checks.sh "$baseline_branch" "$pr_head_sha" main "$pr_number"
+          # --delete-branch removes this PR's head (sync/baseline-*) only.
+          # The base is main and is not deleted. cleanup-sync-branch.yml
+          # repeats the delete for any same-repo head the setting misses,
+          # and it refuses main and codex2api-custom.
           gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --auto --merge --delete-branch
 
           merged=false
