@@ -6,6 +6,7 @@ import {
   ArrowUp,
   ArrowUpDown,
   Download,
+  Eraser,
   FlaskConical,
   FolderOpen,
   Layers,
@@ -90,6 +91,11 @@ import {
   isLargePoolSortDisabled,
   resolveDisabledAccountSorts,
 } from "../lib/accountListSort";
+import {
+  readAntigravityAccountSort,
+  writeAntigravityAccountSort,
+  type AntigravityAccountSortKey,
+} from "../lib/antigravityAccountSort";
 import { accountLabel, isAntigravityAPIKeyAccount } from "../lib/antigravityQuota";
 import { cn } from "@/lib/utils";
 import { getErrorMessage } from "../utils/error";
@@ -111,9 +117,9 @@ import { AntigravityProviderPanel } from "./antigravity/AntigravityStatePanel";
 
 type StatusFilter = "all" | "active" | "rate_limited" | "abnormal" | "disabled" | "locked";
 type AuthFilter = "all" | "oauth" | "api_key";
-type SortKey = "updated_at" | "usage" | "today" | "requests" | "created_at" | "group";
+type SortKey = AntigravityAccountSortKey;
 type SortDir = "asc" | "desc";
-type BatchOperation = "sync" | "test" | "delete" | "update" | "reset" | "clean";
+type BatchOperation = "sync" | "test" | "delete" | "update" | "reset" | "clean" | "quota-clear";
 
 const DEFAULT_SORT: SortKey = "updated_at";
 const SORT_DEFAULT_DIR: Record<SortKey, SortDir> = {
@@ -123,6 +129,7 @@ const SORT_DEFAULT_DIR: Record<SortKey, SortDir> = {
   requests: "desc",
   created_at: "desc",
   group: "asc",
+  id: "desc",
 };
 
 // 列配置 v2:项目与权限合并成"订阅与权限"一列并新增今日/请求列,换新 key 避免旧配置错位。
@@ -199,8 +206,14 @@ function AntigravityAccounts({
   const [groupFilter, setGroupFilter] = useState<AccountGroupFilterValue>(
     EMPTY_ACCOUNT_GROUP_FILTER,
   );
-  const [sortKey, setSortKey] = useState<SortKey>(DEFAULT_SORT);
-  const [sortDir, setSortDir] = useState<SortDir>(SORT_DEFAULT_DIR[DEFAULT_SORT]);
+  // 排序按标签页记住（sessionStorage），与 Codex 账号页一致：切换菜单再回来不丢，新标签页恢复默认。
+  const [initialSort] = useState(readAntigravityAccountSort);
+  const [sortKey, setSortKey] = useState<SortKey>(initialSort?.key ?? DEFAULT_SORT);
+  const [sortDir, setSortDir] = useState<SortDir>(initialSort?.dir ?? SORT_DEFAULT_DIR[DEFAULT_SORT]);
+  useEffect(() => {
+    const isDefault = sortKey === DEFAULT_SORT && sortDir === SORT_DEFAULT_DIR[DEFAULT_SORT];
+    writeAntigravityAccountSort(isDefault ? null : { key: sortKey, dir: sortDir });
+  }, [sortKey, sortDir]);
   const [showFilters, setShowFilters] = useState(false);
   const [pageStats, setPageStats] = useState<Record<string, AccountPageStatsItem>>({});
   const [healthBars, setHealthBars] = useState<Record<string, AccountHealthBucket[]>>({});
@@ -862,6 +875,35 @@ function AntigravityAccounts({
     }
   };
 
+  // 运维止血:清除选中账号已存储的配额事实并递增配额纪元(误封/契约异常时使用),
+  // 后端同事务清空内存门禁状态,凭据与模型目录不受影响。
+  const handleBatchClearQuota = async () => {
+    if (selectedIds.length === 0 || batchBusy) return;
+    const confirmed = await confirm({
+      title: t("antigravityQuota.clearTitle"),
+      description: t("antigravityQuota.clearConfirm"),
+      confirmText: t("antigravityQuota.clearAction"),
+      tone: "warning",
+      confirmVariant: "destructive",
+    });
+    if (!confirmed) return;
+    setBatchOperation("quota-clear");
+    try {
+      const result = await api.clearAntigravityQuota(selectedIds);
+      showToast(
+        (result.failed ?? 0) > 0
+          ? t("antigravityQuota.clearPartial", { cleared: result.cleared ?? 0, failed: result.failed ?? 0 })
+          : t("antigravityQuota.clearDone", { cleared: result.cleared ?? 0 }),
+        (result.failed ?? 0) > 0 ? "warning" : "success",
+      );
+      await finishBatch(true);
+    } catch (batchError) {
+      showToast(t("antigravityQuota.clearFailed", { error: getErrorMessage(batchError) }), "error");
+    } finally {
+      setBatchOperation(null);
+    }
+  };
+
   const handleBatchDelete = async () => {
     if (selectedIds.length === 0 || batchBusy) return;
     const confirmed = await confirm({
@@ -1061,6 +1103,7 @@ function AntigravityAccounts({
     { value: "today", label: t("antigravity.sortToday") },
     { value: "requests", label: t("antigravity.sortRequests") },
     { value: "created_at", label: t("accounts.importTime") },
+    { value: "id", label: t("accounts.idColumn") },
     { value: "group", label: t("antigravity.sortGroup") },
   ];
   const sortLabel = sortOptions.find((option) => option.value === sortKey)?.label ?? sortKey;
@@ -1369,6 +1412,7 @@ function AntigravityAccounts({
                 title={t("accounts.columnSettings")}
                 resetTitle={t("accounts.columnReset")}
                 labels={{
+                  id: t("accounts.idColumn"),
                   tier: t("antigravity.columnTier"),
                   quota: t("antigravity.columnQuota"),
                   proxy: t("accounts.proxyColumn"),
@@ -1567,6 +1611,13 @@ function AntigravityAccounts({
                   onSelect: () => void handleBatchResetStatus(),
                 },
                 {
+                  key: "quota-clear",
+                  label: t("antigravityQuota.clearAction"),
+                  icon: <Eraser className="size-3.5" />,
+                  disabled: batchBusy,
+                  onSelect: () => void handleBatchClearQuota(),
+                },
+                {
                   key: "models",
                   label: t("antigravity.batchModels"),
                   icon: <Layers className="size-3.5" />,
@@ -1635,6 +1686,7 @@ function AntigravityAccounts({
                         />
                       </TableHead>
                       <TableHead className="w-12 text-[13px] font-semibold">{t("accounts.sequence")}</TableHead>
+                      {visibleColumns.id ? renderSortHead("id", t("accounts.idColumn")) : null}
                       <TableHead className="text-[13px] font-semibold">{t("antigravity.columnAccount")}</TableHead>
                       {visibleColumns.tier ? (
                         <TableHead className="text-[13px] font-semibold">{t("antigravity.columnTier")}</TableHead>
