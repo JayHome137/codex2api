@@ -41,14 +41,14 @@ export function formatLatencyMs(ms: number): string {
 
 export function firstTokenTone(ms: number): TimingTone {
   if (ms <= 0) return 'muted'
-  if (ms > 5000) return 'bad'
-  if (ms > 2000) return 'warn'
+  if (ms > 30000) return 'bad'
+  if (ms > 10000) return 'warn'
   return 'good'
 }
 
 export function durationTone(ms: number): TimingTone {
   if (ms <= 0) return 'muted'
-  if (ms > 30000) return 'bad'
-  if (ms > 10000) return 'warn'
+  if (ms > 40000) return 'bad'
+  if (ms > 20000) return 'warn'
   return 'good'
 }
