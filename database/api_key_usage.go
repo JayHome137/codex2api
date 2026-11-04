@@ -549,14 +549,20 @@ func emailFromCredentialsJSON(raw string) string {
 }
 
 // ListAPIKeyLastUsedAt 返回每个 API Key 最近一次请求时间（来自 usage_logs）。
-// 仅包含有调用记录的 key；索引 idx_usage_logs_api_key_created_at 支撑该聚合。
+// 仅包含有调用记录的 key。按 key 逐个沿 idx_usage_logs_api_key_created_at 倒序取第一条
+// 非 499 记录,代价是 O(key 数 × log n);旧写法 GROUP BY api_key_id 要回表读每一行的
+// status_code,等于每次打开密钥列表都把全部历史扫一遍。
 func (db *DB) ListAPIKeyLastUsedAt(ctx context.Context) (map[int64]time.Time, error) {
 	query := `
-		SELECT api_key_id, MAX(created_at)
-		FROM usage_logs
-		WHERE api_key_id > 0
-		  AND status_code <> 499
-		GROUP BY api_key_id
+		SELECT k.id, (
+			SELECT u.created_at
+			FROM usage_logs u
+			WHERE u.api_key_id = k.id
+			  AND u.status_code <> 499
+			ORDER BY u.created_at DESC
+			LIMIT 1
+		)
+		FROM api_keys k
 	`
 	rows, err := db.conn.QueryContext(ctx, query)
 	if err != nil {
@@ -646,7 +652,8 @@ func (db *DB) getAllAPIKeysCostSince(ctx context.Context, since time.Time, honor
 }
 
 // APIKeySelfUsageReport 是 API Key 自助统计页使用的只读聚合结果。
-// 只包含当前 key 自己的 usage_logs 数据,不返回账号池、客户端 IP、raw key 等后台字段。
+// 只包含当前 key 自己的 usage_logs 数据(含经该 key 发起请求的客户端 IP 与 User-Agent,
+// 共享同一 key 的持有者可互相看到),不返回其他 key 的日志、账号池、raw key 等后台字段。
 type APIKeySelfUsageReport struct {
 	Summary            APIKeySelfUsageSummary     `json:"summary"`
 	Windows            APIKeySelfUsageWindows     `json:"windows"`
@@ -656,17 +663,25 @@ type APIKeySelfUsageReport struct {
 	RecentLogsTotal    int64                      `json:"recent_logs_total"`
 	RecentLogsPage     int                        `json:"recent_logs_page"`
 	RecentLogsPageSize int                        `json:"recent_logs_page_size"`
-	LogModels          []string                   `json:"log_models"`
-	LogEndpoints       []string                   `json:"log_endpoints"`
+	// LogModels / LogEndpoints 是时间范围内出现过的请求模型与入站端点(不受日志筛选影响),
+	// 供自助页日志筛选下拉使用。
+	LogModels    []string `json:"log_models"`
+	LogEndpoints []string `json:"log_endpoints"`
 }
 
-// APIKeySelfLogFilter narrows only recent_logs; aggregates remain unchanged.
+// APIKeySelfLogFilter 是自助页请求日志的筛选条件,只作用于 recent_logs,
+// 不影响汇总、窗口与排行。
 type APIKeySelfLogFilter struct {
-	Model    string
+	// Model 同时匹配请求模型与实际生效模型。
+	Model string
+	// Endpoint 匹配入站端点(与 recent_logs.endpoint 同口径)。
 	Endpoint string
-	Status   string
-	Stream   string
-	Channel  string
+	// Status: success | error | 4xx | 5xx | 429;空表示不限。
+	Status string
+	// Stream: stream | sync;空表示不限。
+	Stream string
+	// Channel: codex | grok | antigravity | claude;空表示不限。
+	Channel string
 }
 
 const apiKeySelfLogOptionLimit = 50
@@ -719,6 +734,8 @@ type APIKeySelfUsageLog struct {
 	UserBilling
 	ID                       int64     `json:"id"`
 	Channel                  string    `json:"channel"`
+	ClientIP                 string    `json:"client_ip"`
+	ClientUserAgent          string    `json:"client_user_agent"`
 	Endpoint                 string    `json:"endpoint"`
 	Model                    string    `json:"model"`
 	EffectiveModel           string    `json:"effective_model"`
@@ -728,7 +745,11 @@ type APIKeySelfUsageLog struct {
 	FirstTokenMS             int       `json:"first_token_ms"`
 	InputTokens              int       `json:"input_tokens"`
 	OutputTokens             int       `json:"output_tokens"`
+	ReasoningTokens          int       `json:"reasoning_tokens"`
+	ReasoningEffort          string    `json:"reasoning_effort"`
 	CachedTokens             int       `json:"cached_tokens"`
+	CacheWrite5mTokens       int       `json:"cache_write_5m_tokens"`
+	CacheWrite1hTokens       int       `json:"cache_write_1h_tokens"`
 	ImageInputTokens         int       `json:"image_input_tokens"`
 	ImageOutputTokens        int       `json:"image_output_tokens"`
 	CachedImageInputTokens   int       `json:"cached_image_input_tokens"`
@@ -738,14 +759,14 @@ type APIKeySelfUsageLog struct {
 	OutputCost               float64   `json:"output_cost"`
 	CacheReadCost            float64   `json:"cache_read_cost"`
 	TotalCost                float64   `json:"total_cost"`
-	ModelInputPrice          float64   `json:"model_input_price_per_mtoken"`
-	ModelOutputPrice         float64   `json:"model_output_price_per_mtoken"`
-	ModelCacheReadPrice      float64   `json:"model_cache_read_price_per_mtoken"`
-	AppliedBillingMultiplier float64   `json:"applied_billing_multiplier"`
 	InputPrice               float64   `json:"input_price_per_mtoken"`
 	OutputPrice              float64   `json:"output_price_per_mtoken"`
 	CacheReadPrice           float64   `json:"cache_read_price_per_mtoken"`
 	RateMultiplier           float64   `json:"rate_multiplier"`
+	ModelInputPrice          float64   `json:"model_input_price_per_mtoken"`
+	ModelOutputPrice         float64   `json:"model_output_price_per_mtoken"`
+	ModelCacheReadPrice      float64   `json:"model_cache_read_price_per_mtoken"`
+	AppliedBillingMultiplier float64   `json:"applied_billing_multiplier"`
 	LongContext              bool      `json:"long_context"`
 	ServiceTier              string    `json:"service_tier"`
 	Stream                   bool      `json:"stream"`
@@ -756,10 +777,10 @@ type APIKeySelfUsageLog struct {
 	CreatedAt                time.Time `json:"created_at"`
 }
 
-// populateBillingBreakdown 复用与管理端一致的计费拆解逻辑，按 effective_model + 计费档位
+// populateBillingBreakdown 复用与管理端一致的计费拆解逻辑，按生效模型、Daybreak 程序与计费档位
 // 还原输入/输出/缓存读取的费用与单价，并在与实际计费总额不一致时等比缩放对齐。
 func (l *APIKeySelfUsageLog) populateBillingBreakdown() {
-	if l.UserBillingMode == UserBillingModePerImage {
+	if IsUnitUserBillingMode(l.UserBillingMode) {
 		l.TotalCost = l.UserBilled
 		return
 	}
@@ -767,22 +788,21 @@ func (l *APIKeySelfUsageLog) populateBillingBreakdown() {
 	if billingModel == "" {
 		billingModel = l.Model
 	}
-	displayTotal := l.UserBilled
 	if MediaBillingUnit(billingModel) != "" {
-		l.TotalCost = displayTotal
+		l.TotalCost = l.UserBilled
 		return
 	}
-	breakdown := UsageLogCostBreakdown(&UsageLogInput{Model: billingModel, ServiceTier: l.ServiceTier, InputTokens: l.InputTokens, OutputTokens: l.OutputTokens, CachedTokens: l.CachedTokens, ImageInputTokens: l.ImageInputTokens, ImageOutputTokens: l.ImageOutputTokens, CachedImageInputTokens: l.CachedImageInputTokens})
+	breakdown := UsageLogCostBreakdown(&UsageLogInput{Model: billingModel, DaybreakProgram: l.DaybreakProgram, ServiceTier: l.ServiceTier, InputTokens: l.InputTokens, OutputTokens: l.OutputTokens, CachedTokens: l.CachedTokens, ImageInputTokens: l.ImageInputTokens, ImageOutputTokens: l.ImageOutputTokens, CachedImageInputTokens: l.CachedImageInputTokens})
 	l.InputCost = breakdown.InputCost
 	l.OutputCost = breakdown.OutputCost
 	l.CacheReadCost = breakdown.CacheReadCost
 	l.TotalCost = breakdown.TotalCost
-	l.ModelInputPrice = breakdown.InputPricePerMToken
-	l.ModelOutputPrice = breakdown.OutputPricePerMToken
-	l.ModelCacheReadPrice = breakdown.CacheReadPricePerMToken
 	l.InputPrice = breakdown.InputPricePerMToken
 	l.OutputPrice = breakdown.OutputPricePerMToken
 	l.CacheReadPrice = breakdown.CacheReadPricePerMToken
+	l.ModelInputPrice = breakdown.InputPricePerMToken
+	l.ModelOutputPrice = breakdown.OutputPricePerMToken
+	l.ModelCacheReadPrice = breakdown.CacheReadPricePerMToken
 	l.RateMultiplier = breakdown.ServiceTierCostMultiplier
 	l.LongContext = breakdown.LongContext
 
@@ -824,35 +844,13 @@ func (db *DB) GetAPIKeySelfUsageReportFiltered(ctx context.Context, apiKeyID int
 		RecentLogsPageSize: recentPageSize,
 	}
 	var err error
-	if report.Summary, err = db.getAPIKeySelfUsageSummary(ctx, apiKeyID, rangeStart, rangeEnd); err != nil {
-		return nil, err
-	}
-	if report.Windows.Today, err = db.getAPIKeySelfDailyWindow(ctx, apiKeyID); err != nil {
-		return nil, err
-	}
-	if report.Windows.Last5h, err = db.getAPIKeySelfSlidingWindow(ctx, apiKeyID, 5*time.Hour); err != nil {
-		return nil, err
-	}
-	if report.Windows.Last7d, err = db.getAPIKeySelfSlidingWindow(ctx, apiKeyID, 7*24*time.Hour); err != nil {
-		return nil, err
-	}
-	if report.Windows.Last30d, err = db.getAPIKeySelfSlidingWindow(ctx, apiKeyID, 30*24*time.Hour); err != nil {
-		return nil, err
-	}
-	if report.Models, err = db.listAPIKeySelfUsageBreakdown(ctx, apiKeyID, rangeStart, rangeEnd, "model", 8); err != nil {
-		return nil, err
-	}
-	if report.Endpoints, err = db.listAPIKeySelfUsageBreakdown(ctx, apiKeyID, rangeStart, rangeEnd, "endpoint", 8); err != nil {
+	// 汇总、排行、筛选选项与四个额度窗口同出一次扫描。以前是十来条各扫一遍区间的聚合
+	// 串行执行,自助页默认 30 天、整体 8 秒预算,慢盘 SQLite 上有效 Key 也会因报告超时而"登录失败"。
+	if err = db.fillAPIKeySelfAggregates(ctx, report, apiKeyID, rangeStart, rangeEnd, time.Now()); err != nil {
 		return nil, err
 	}
 	report.RecentLogs, report.RecentLogsTotal, report.RecentLogsPage, report.RecentLogsPageSize, err = db.listAPIKeySelfRecentLogs(ctx, apiKeyID, rangeStart, rangeEnd, recentPage, recentPageSize, logFilter, report.Summary.Requests)
 	if err != nil {
-		return nil, err
-	}
-	if report.LogModels, err = db.listAPIKeySelfDistinct(ctx, apiKeyID, rangeStart, rangeEnd, "NULLIF(model, '')"); err != nil {
-		return nil, err
-	}
-	if report.LogEndpoints, err = db.listAPIKeySelfDistinct(ctx, apiKeyID, rangeStart, rangeEnd, apiKeySelfEndpointExpr); err != nil {
 		return nil, err
 	}
 	return report, nil
@@ -860,26 +858,7 @@ func (db *DB) GetAPIKeySelfUsageReportFiltered(ctx context.Context, apiKeyID int
 
 const apiKeySelfEndpointExpr = "COALESCE(NULLIF(inbound_endpoint, ''), NULLIF(endpoint, ''), 'unknown')"
 
-func (db *DB) listAPIKeySelfDistinct(ctx context.Context, apiKeyID int64, rangeStart, rangeEnd time.Time, expr string) ([]string, error) {
-	where, args := db.apiKeySelfUsageWhere(apiKeyID, rangeStart, rangeEnd)
-	args = append(args, apiKeySelfLogOptionLimit)
-	query := `SELECT ` + expr + ` AS value FROM usage_logs WHERE ` + where + ` AND ` + expr + ` IS NOT NULL GROUP BY 1 ORDER BY COUNT(*) DESC, value ASC LIMIT ` + fmt.Sprintf("$%d", len(args))
-	rows, err := db.conn.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	values := []string{}
-	for rows.Next() {
-		var value string
-		if err := rows.Scan(&value); err != nil {
-			return nil, err
-		}
-		values = append(values, value)
-	}
-	return values, rows.Err()
-}
-
+// appendAPIKeySelfLogFilter 把日志筛选条件追加到 apiKeySelfUsageWhere 生成的 where 上。
 func appendAPIKeySelfLogFilter(where string, args []interface{}, f APIKeySelfLogFilter) (string, []interface{}) {
 	if model := strings.TrimSpace(f.Model); model != "" {
 		args = append(args, model)
@@ -934,32 +913,6 @@ const (
 	usageWindowKindSliding = "sliding"
 )
 
-func (db *DB) getAPIKeySelfSlidingWindow(ctx context.Context, apiKeyID int64, window time.Duration) (APIKeySelfUsageWindow, error) {
-	out := APIKeySelfUsageWindow{WindowKind: usageWindowKindSliding}
-	usage, err := db.GetAPIKeyWindowUsage(ctx, apiKeyID, window)
-	if err != nil || usage == nil {
-		return out, err
-	}
-	out.APIKeyWindowUsage = *usage
-	if usage.OldestAt != nil {
-		decay := usage.OldestAt.Add(window)
-		out.DecayAt = &decay
-	}
-	return out, nil
-}
-
-func (db *DB) getAPIKeySelfDailyWindow(ctx context.Context, apiKeyID int64) (APIKeySelfUsageWindow, error) {
-	dayStart := StartOfDay(time.Now())
-	resetAt := dayStart.AddDate(0, 0, 1)
-	out := APIKeySelfUsageWindow{WindowKind: usageWindowKindFixed, ResetAt: &resetAt}
-	usage, err := db.GetAPIKeyUsageSince(ctx, apiKeyID, dayStart)
-	if err != nil || usage == nil {
-		return out, err
-	}
-	out.APIKeyWindowUsage = *usage
-	return out, nil
-}
-
 func (db *DB) apiKeySelfUsageWhere(apiKeyID int64, rangeStart, rangeEnd time.Time) (string, []interface{}) {
 	where := "api_key_id = $1 AND status_code <> 499"
 	args := []interface{}{apiKeyID}
@@ -972,101 +925,6 @@ func (db *DB) apiKeySelfUsageWhere(apiKeyID int64, rangeStart, rangeEnd time.Tim
 		where += fmt.Sprintf(" AND created_at < $%d", len(args))
 	}
 	return where, args
-}
-
-func (db *DB) getAPIKeySelfUsageSummary(ctx context.Context, apiKeyID int64, rangeStart, rangeEnd time.Time) (APIKeySelfUsageSummary, error) {
-	where, args := db.apiKeySelfUsageWhere(apiKeyID, rangeStart, rangeEnd)
-	minuteAgo := time.Now().Add(-1 * time.Minute)
-	args = append(args, db.timeArg(minuteAgo))
-	minuteArg := fmt.Sprintf("$%d", len(args))
-	query := `
-		SELECT
-			COUNT(*),
-			COALESCE(SUM(total_tokens), 0),
-			COALESCE(SUM(input_tokens), 0),
-			COALESCE(SUM(output_tokens), 0),
-			COALESCE(SUM(cached_tokens), 0),
-			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(user_billed), 0),
-			COALESCE(AVG(NULLIF(duration_ms, 0)), 0),
-			COALESCE(AVG(NULLIF(first_token_ms, 0)), 0),
-			COALESCE(SUM(CASE WHEN created_at >= ` + minuteArg + ` THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN created_at >= ` + minuteArg + ` THEN total_tokens ELSE 0 END), 0)
-		FROM usage_logs
-		WHERE ` + where
-	var summary APIKeySelfUsageSummary
-	err := db.conn.QueryRowContext(ctx, query, args...).Scan(
-		&summary.Requests,
-		&summary.Tokens,
-		&summary.InputTokens,
-		&summary.OutputTokens,
-		&summary.CachedTokens,
-		&summary.ErrorCount,
-		&summary.UserBilled,
-		&summary.AvgDurationMS,
-		&summary.AvgFirstTokenMS,
-		&summary.RPM,
-		&summary.TPM,
-	)
-	return summary, err
-}
-
-func (db *DB) listAPIKeySelfUsageBreakdown(ctx context.Context, apiKeyID int64, rangeStart, rangeEnd time.Time, kind string, limit int) ([]APIKeySelfUsageBreakdown, error) {
-	if limit <= 0 {
-		limit = 8
-	}
-	nameExpr := "COALESCE(NULLIF(effective_model, ''), NULLIF(model, ''), 'unknown')"
-	if kind == "endpoint" {
-		nameExpr = "COALESCE(NULLIF(inbound_endpoint, ''), NULLIF(endpoint, ''), 'unknown')"
-	}
-	where, args := db.apiKeySelfUsageWhere(apiKeyID, rangeStart, rangeEnd)
-	args = append(args, limit)
-	limitArg := fmt.Sprintf("$%d", len(args))
-	query := `
-		SELECT
-			` + nameExpr + ` AS name,
-			COUNT(*) AS requests,
-			COALESCE(SUM(total_tokens), 0) AS tokens,
-			COALESCE(SUM(input_tokens), 0) AS input_tokens,
-			COALESCE(SUM(output_tokens), 0) AS output_tokens,
-			COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
-			COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
-			COALESCE(SUM(user_billed), 0) AS user_billed
-		FROM usage_logs
-		WHERE ` + where + `
-		GROUP BY 1
-		ORDER BY user_billed DESC, requests DESC, name ASC
-		LIMIT ` + limitArg
-	rows, err := db.conn.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	items := make([]APIKeySelfUsageBreakdown, 0, limit)
-	for rows.Next() {
-		var item APIKeySelfUsageBreakdown
-		if err := rows.Scan(
-			&item.Name,
-			&item.Requests,
-			&item.Tokens,
-			&item.InputTokens,
-			&item.OutputTokens,
-			&item.CachedTokens,
-			&item.ErrorCount,
-			&item.UserBilled,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if items == nil {
-		items = []APIKeySelfUsageBreakdown{}
-	}
-	return items, nil
 }
 
 // fillAPIKeySelfAggregates 同时填出区间汇总、模型/端点排行(前 8)、日志筛选下拉选项,
@@ -1405,8 +1263,8 @@ func (db *DB) listAPIKeySelfRecentLogs(ctx context.Context, apiKeyID int64, rang
 
 	total := knownTotal
 	if total < 0 || where != baseWhere {
-		countQuery := `SELECT COUNT(*) FROM usage_logs WHERE ` + where
-		if err := db.conn.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		var err error
+		if total, err = db.countAPIKeySelfLogs(ctx, apiKeyID, rangeStart, rangeEnd, filter); err != nil {
 			return nil, 0, page, pageSize, err
 		}
 	}
@@ -1425,6 +1283,7 @@ func (db *DB) listAPIKeySelfRecentLogs(ctx context.Context, apiKeyID int64, rang
 		SELECT
 			id,
 			COALESCE(channel, ''),
+			COALESCE(client_ip, ''), COALESCE(client_user_agent, ''),
 			` + apiKeySelfEndpointExpr + ` AS endpoint_name,
 			COALESCE(model, ''),
 			COALESCE(effective_model, ''),
@@ -1434,7 +1293,10 @@ func (db *DB) listAPIKeySelfRecentLogs(ctx context.Context, apiKeyID int64, rang
 			COALESCE(first_token_ms, 0),
 			COALESCE(input_tokens, 0),
 			COALESCE(output_tokens, 0),
+			COALESCE(reasoning_tokens, 0),
+			COALESCE(reasoning_effort, ''),
 			COALESCE(cached_tokens, 0),
+			COALESCE(cache_write_5m_tokens, 0), COALESCE(cache_write_1h_tokens, 0),
 			COALESCE(image_input_tokens, 0), COALESCE(image_output_tokens, 0), COALESCE(cached_image_input_tokens, 0),
 			COALESCE(total_tokens, 0),
 			COALESCE(user_billed, 0),
@@ -1448,7 +1310,7 @@ func (db *DB) listAPIKeySelfRecentLogs(ctx context.Context, apiKeyID int64, rang
 			created_at
 		FROM usage_logs
 		WHERE ` + where + `
-		ORDER BY id DESC
+		ORDER BY created_at DESC, id DESC
 		LIMIT ` + limitArg + ` OFFSET ` + offsetArg
 	rows, err := db.conn.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1463,6 +1325,7 @@ func (db *DB) listAPIKeySelfRecentLogs(ctx context.Context, apiKeyID int64, rang
 		if err := rows.Scan(
 			&item.ID,
 			&item.Channel,
+			&item.ClientIP, &item.ClientUserAgent,
 			&item.Endpoint,
 			&item.Model,
 			&item.EffectiveModel,
@@ -1472,9 +1335,13 @@ func (db *DB) listAPIKeySelfRecentLogs(ctx context.Context, apiKeyID int64, rang
 			&item.FirstTokenMS,
 			&item.InputTokens,
 			&item.OutputTokens,
-			&item.CachedTokens, &item.ImageInputTokens, &item.ImageOutputTokens, &item.CachedImageInputTokens,
+			&item.ReasoningTokens,
+			&item.ReasoningEffort,
+			&item.CachedTokens, &item.CacheWrite5mTokens, &item.CacheWrite1hTokens,
+			&item.ImageInputTokens, &item.ImageOutputTokens, &item.CachedImageInputTokens,
 			&item.TotalTokens,
-			&item.UserBilled, &item.UserBillingMode, &item.ImageUnitPrice, &item.BilledImageCount,
+			&item.UserBilled,
+			&item.UserBillingMode, &item.ImageUnitPrice, &item.BilledImageCount,
 			&item.ServiceTier,
 			&item.Stream,
 			&item.Compact,
