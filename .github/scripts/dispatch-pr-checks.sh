@@ -69,6 +69,7 @@ custom_preserve_paths=(
   frontend/src/components/Layout.tsx
   frontend/src/components/ui/tooltip.tsx
   frontend/src/lib/accountQuickConfig.ts
+  frontend/src/lib/usageTiming.ts
   frontend/src/locales/en.json
   frontend/src/locales/zh.json
   frontend/src/pages/APIKeyUsagePortal.tsx
