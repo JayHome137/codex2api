@@ -201,7 +201,7 @@ func (h *Handler) withModelCooldownFilter(ctx context.Context, model string, fil
 func antigravityRequestCooldownKeys(model string) (wireModel string, familyKey string) {
 	wireModel, _ = AntigravityWireModelID(model)
 	if antigravityIsGeminiModel(model) || antigravityIsGeminiModel(wireModel) {
-		familyKey = antigravityGeminiFamilyCooldownKey
+		familyKey = antigravityGeminiQuotaCooldownKey(model, wireModel)
 	}
 	return wireModel, familyKey
 }
