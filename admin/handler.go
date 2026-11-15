@@ -9400,6 +9400,7 @@ type settingsResponse struct {
 	CodexWSBusyOverflowEnabled          bool                             `json:"codex_ws_busy_overflow_enabled"`
 	CodexWSBusyPatienceSec              int                              `json:"codex_ws_busy_patience_sec"`
 	CodexWSStatelessSlots               int                              `json:"codex_ws_stateless_slots"`
+	CodexWSDownstreamKeepaliveSlots     int                              `json:"codex_ws_downstream_keepalive_slots"`
 	GithubTokenConfigured               bool                             `json:"github_token_configured"`
 	GithubProxyURL                      string                           `json:"github_proxy_url"`
 	CodexOverloadPauseEnabled           bool                             `json:"codex_overload_pause_enabled"`
