@@ -381,6 +381,8 @@ type usageLogEntry struct {
 	UpstreamErrorKind      string
 	ErrorMessage           string
 	PromptPolicyIncidentID string
+	// CreatedAt 是请求完成、进缓冲的时刻,落库为 created_at。
+	CreatedAt time.Time
 }
 
 // New 创建数据库连接并自动建表。
@@ -1126,7 +1128,12 @@ func (db *DB) migrate(ctx context.Context) error {
 	if db.isSQLite() {
 		return db.migrateSQLite(ctx)
 	}
-	query := `
+	query := codexClientVersionCacheSchema + `;
+	CREATE TABLE IF NOT EXISTS key_usage_account_permissions (key_id BIGINT PRIMARY KEY, view_enabled BOOLEAN NOT NULL DEFAULT FALSE, reset_enabled BOOLEAN NOT NULL DEFAULT FALSE);
+	CREATE TABLE IF NOT EXISTS key_usage_reset_attempts (request_id TEXT PRIMARY KEY, key_id BIGINT NOT NULL, account_id BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+	CREATE TABLE IF NOT EXISTS key_usage_reset_leases (scope TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at BIGINT NOT NULL);
+	CREATE TABLE IF NOT EXISTS key_usage_reset_cooldowns (scope TEXT PRIMARY KEY, expires_at BIGINT NOT NULL);
+	CREATE TABLE IF NOT EXISTS key_usage_reset_uncertain (scope TEXT PRIMARY KEY, request_id TEXT NOT NULL, source TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
 	CREATE TABLE IF NOT EXISTS accounts (
 		id            SERIAL PRIMARY KEY,
 		name          VARCHAR(255) DEFAULT '',
@@ -4503,6 +4510,14 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 		return nil
 	}
 
+	// 日志要在缓冲里等一个刷盘间隔(默认 5 秒,最长 300 秒)才落库,created_at 交给列默认值
+	// NOW() 的话记的是刷盘时刻:同一批请求被压到同一秒,整点前完成的请求还会被算进下一个
+	// 小时(issue #857)。这里在请求完成时就定下时间,落库时显式写入。
+	createdAt := log.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+
 	db.logMu.Lock()
 	db.logBuf = append(db.logBuf, usageLogEntry{
 		RequestID:              clampUsageLogText(log.RequestID, usageLogRequestIDMaxLen),
@@ -4579,6 +4594,7 @@ func (db *DB) InsertUsageLog(ctx context.Context, log *UsageLogInput) error {
 		UpstreamErrorKind:      clampUsageLogText(log.UpstreamErrorKind, usageLogShortTextMaxLen),
 		ErrorMessage:           log.ErrorMessage,
 		PromptPolicyIncidentID: clampUsageLogText(log.PromptPolicyIncidentID, usageLogShortTextMaxLen),
+		CreatedAt:              createdAt,
 	})
 	db.trimUsageLogBufferLocked()
 	bufLen := len(db.logBuf)
@@ -5122,7 +5138,7 @@ func (db *DB) batchInsertLogsChunk(ctx context.Context, tx *sql.Tx, batch []usag
 			e.RequestedServiceTier, e.ActualServiceTier, e.BillingServiceTier,
 			e.APIKeyID, e.APIKeyName, e.APIKeyMasked, e.ImageCount, e.ImageWidth, e.ImageHeight, e.ImageBytes, e.ImageFormat, e.ImageSize, e.AccountBilled, e.UserBilled, e.UpstreamCost, e.UpstreamRateMultiplier, e.UpstreamCostAvailable, e.UpstreamCostProvider,
 			e.IsRetryAttempt, e.AttemptIndex, e.UpstreamErrorKind, e.ErrorMessage, e.ViaWebsocket,
-			e.ClientUserAgent, e.UpstreamUserAgent, e.UserAgentOverridden, e.TurnStateOverridden, e.TurnStateRewriteNote, e.InternalReason, e.ParentRequestID, nullablePromptPolicyIncidentID(e.PromptPolicyIncidentID), e.RequestID, e.UpstreamRequestID, e.UpstreamProxyID, e.UpstreamProxyName, e.InjectedTurnState, e.UpstreamTurnState, e.UserBillingMode, e.ImageUnitPrice, e.BilledImageCount, e.DaybreakProgram, e.VideoSeconds)
+			e.ClientUserAgent, e.UpstreamUserAgent, e.UserAgentOverridden, e.TurnStateOverridden, e.TurnStateRewriteNote, e.InternalReason, e.ParentRequestID, nullablePromptPolicyIncidentID(e.PromptPolicyIncidentID), e.RequestID, e.UpstreamRequestID, e.UpstreamProxyID, e.UpstreamProxyName, e.InjectedTurnState, e.UpstreamTurnState, e.UserBillingMode, e.ImageUnitPrice, e.BilledImageCount, e.DaybreakProgram, e.VideoSeconds, db.usageLogCreatedAtArg(e.CreatedAt))
 		argIdx += usageLogInsertColumnCount
 	}
 

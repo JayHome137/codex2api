@@ -149,6 +149,18 @@ type Handler struct {
 	reqCountCache      map[string]*requestCountCacheEntry
 	reqCountRefreshMu  sync.Mutex
 	reqCountRefreshing map[string]bool
+	// reqCountRefreshBreakdown is true while the in-flight channel refresh
+	// includes error-code and model breakdowns (small pools). The paged list
+	// reuses that scan instead of starting a second one.
+	reqCountRefreshBreakdown map[string]bool
+	// pageRequestCountHook, when set, replaces the usage-log aggregation.
+	// Production leaves it nil. Tests use it to simulate a slow scan.
+	pageRequestCountHook func(context.Context, []int64) (map[int64]*database.AccountRequestCount, error)
+	// Visible-page breakdowns for pools whose channel cache stores totals
+	// only. Filled off the list request.
+	pageBreakdownMu       sync.Mutex
+	pageBreakdown         map[string]*pageRequestBreakdown
+	pageBreakdownInflight map[string]string
 	// 大池分批聚合的断点续跑半成品,见 requestCountStaging。
 	reqCountStagingMu sync.Mutex
 	reqCountStaging   map[string]*requestCountStaging
@@ -1140,6 +1152,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		}
 	})
 	api.GET("/stats", h.GetStats)
+	api.GET("/key-usage-account-permissions/:id", h.GetKeyUsageAccountPermissions)
+	api.PUT("/key-usage-account-permissions/:id", h.SetKeyUsageAccountPermissions)
+	api.DELETE("/key-usage-reset-uncertain/:id", h.ClearKeyUsageResetUncertain)
 	api.GET("/accounts", h.ListAccounts)
 	api.GET("/accounts/analysis", h.GetAccountAnalysis)
 	api.GET("/accounts/page-stats", h.GetAccountPageStats)
@@ -1197,6 +1212,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/:id/grok/state", h.GetGrokAccountState)
 	api.POST("/accounts/:id/grok/sync", h.SyncGrokAccountState)
 	api.POST("/accounts/:id/grok/capabilities/probe", h.ProbeGrokAccountCapabilities)
+	api.GET("/accounts/:id/grok/auth-json", h.GetGrokAccountAuthJSON)
 	api.POST("/accounts/:id/oauth/exchange-code", h.UpdateOAuthAccountCode)
 	api.POST("/accounts/import", h.ImportAccounts)
 	api.POST("/accounts/sub2api/preview", h.PreviewSub2APIAccounts)
@@ -1237,6 +1253,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/:id/scheduled-tests", h.GetScheduledConnectionTests)
 	api.PUT("/accounts/:id/scheduled-tests", h.UpdateScheduledConnectionTests)
 	api.GET("/accounts/:id/model-detector", h.DetectCodexModel)
+	api.GET("/modeltrace/bank", h.GetModelTraceBank)
+	api.POST("/modeltrace/bank/update", h.UpdateModelTraceBank)
+	api.DELETE("/modeltrace/bank", h.ResetModelTraceBank)
 	api.GET("/accounts/:id/quality-test/options", h.QualityTestOptions)
 	api.POST("/accounts/:id/quality-test", h.CreateQualityTestJob)
 	h.registerIntelligenceCheckRoutes(api)
@@ -1279,6 +1298,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.DELETE("/usage/logs", h.ClearUsageLogs)
 	api.GET("/setup-hints", h.GetSetupHints)
 	api.GET("/keys", h.ListAPIKeys)
+	api.GET("/keys-concurrency", h.GetAPIKeyConcurrency)
 	api.POST("/keys", h.CreateAPIKey)
 	api.POST("/keys/reset-all-quotas", h.ResetAllAPIKeyQuotas)
 	api.PATCH("/keys/:id", h.UpdateAPIKey)
@@ -1990,16 +2010,16 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 
 	var reqCounts map[int64]*database.AccountRequestCount
 	var usage5h, usage7d map[int64]*database.AccountTimeRangeUsage
+	var requestCountsPending bool
 	if view == "page" {
 		pageIDs := make([]int64, 0, len(rows))
 		for _, row := range rows {
 			pageIDs = append(pageIDs, row.ID)
 		}
-		reqCounts, err = h.db.GetAccountRequestCountsByIDs(ctx, pageIDs)
-		if err != nil {
-			log.Printf("获取当前页账号请求统计失败: %v", err)
-			reqCounts = make(map[int64]*database.AccountRequestCount)
-		}
+		// Totals, error codes, and model mix scan usage_logs. A slow scan must
+		// not block the account rows: read the channel cache, or fill this
+		// page in the background, and let stats_state tell the client to poll.
+		reqCounts, requestCountsPending = h.pageRequestCounts(channel, pageIDs)
 		usage5h = make(map[int64]*database.AccountTimeRangeUsage)
 		usage7d = make(map[int64]*database.AccountTimeRangeUsage)
 	} else {
@@ -2063,11 +2083,15 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 	}
 
 	if pageSelection != nil {
+		statsState := pageSelection.StatsState
+		if requestCountsPending {
+			statsState = combineAccountStatsState(statsState, "stale")
+		}
 		c.JSON(http.StatusOK, accountsPageResponse{
 			Accounts: accounts,
 			Page:     pageSelection.Page, PageSize: pageSelection.PageSize, Total: pageSelection.Total,
 			Summary: pageSelection.Summary, Facets: pageSelection.Facets,
-			SnapshotAt: pageSelection.SnapshotAt.Format(time.RFC3339), StatsState: pageSelection.StatsState,
+			SnapshotAt: pageSelection.SnapshotAt.Format(time.RFC3339), StatsState: statsState,
 			DisabledSorts: pageSelection.DisabledSorts,
 		})
 		return
@@ -3554,7 +3578,7 @@ func (h *Handler) getCachedRequestCounts() map[int64]*database.AccountRequestCou
 		log.Printf("获取账号请求统计失败: %v", err)
 		return make(map[int64]*database.AccountRequestCount)
 	}
-	h.storeRequestCountCache(cacheKey, counts, nil, time.Time{})
+	h.storeRequestCountCache(cacheKey, counts, nil, time.Time{}, false, nil)
 	return counts
 }
 
@@ -6446,9 +6470,9 @@ func (h *Handler) RefreshAccountUsage(c *gin.Context) {
 			}
 			if value := row.GetCredential(auth.ClaudeUsageWindowsCredentialKey); value != "" {
 				resp["claude_usage_windows_probed"] = true
-				if windows := parseClaudeUsageWindows(value); len(windows) > 0 {
-					resp["claude_usage_windows"] = windows
-				}
+			}
+			if windows := claudeAccountUsageWindows(row); len(windows) > 0 {
+				resp["claude_usage_windows"] = windows
 			}
 		}
 	}
@@ -8612,7 +8636,9 @@ func (h *Handler) ClearUsageLogs(c *gin.Context) {
 
 // ==================== API Keys ====================
 
-// ListAPIKeys 获取所有 API 密钥（脱敏版本）
+// ListAPIKeys 获取所有 API 密钥（脱敏版本）。
+// view=lite 只返回密钥行本身,跳过窗口费用与最近使用时间:这两项要聚合 usage_logs,
+// 而筛选下拉、横幅等场景用不到,慢盘 SQLite 上每次打开页面都白扫一遍。
 func (h *Handler) ListAPIKeys(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
@@ -8620,6 +8646,14 @@ func (h *Handler) ListAPIKeys(c *gin.Context) {
 	keys, err := h.db.ListAPIKeys(ctx)
 	if err != nil {
 		writeInternalError(c, err)
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(c.Query("view")), "lite") {
+		maskedKeys := make([]*MaskedAPIKeyRow, 0, len(keys))
+		for _, k := range keys {
+			maskedKeys = append(maskedKeys, NewMaskedAPIKeyRow(k))
+		}
+		c.JSON(http.StatusOK, apiKeysResponse{Keys: maskedKeys})
 		return
 	}
 
@@ -9140,11 +9174,11 @@ func sanitizeImageGenerationPolicy(in database.APIKeyLimits) string {
 }
 
 // knownAPIKeyPlanFilters 是账号套餐白名单允许的取值集合。与前端 PlanMultiSelect 的
-// 选项、以及 Accounts 页的套餐筛选保持一致(按原始 plan_type 精确匹配,pro 与 prolite
+// 选项、以及 Accounts 页的套餐筛选保持一致(按原始 plan_type 精确匹配,pro 与 prolite/promax
 // 相互独立)。未知值在 cleanPlanAllow 中被丢弃,避免把打字错误写进过滤条件后导致该
 // Key 永远选不到账号。
 var knownAPIKeyPlanFilters = map[string]struct{}{
-	"free": {}, "plus": {}, "pro": {}, "prolite": {}, "team": {}, "k12": {}, "go": {},
+	"free": {}, "plus": {}, "pro": {}, "prolite": {}, "promax": {}, "team": {}, "k12": {}, "go": {},
 	// Grok live /user.subscriptionTier values. These labels are authorization
 	// inputs only when auth.Store has a fresh live fact; JWT/archive labels never
 	// satisfy plan_allow. "api" is the explicit xAI API-key channel plan.
@@ -9565,6 +9599,7 @@ type updateSettingsReq struct {
 	CodexWSBusyOverflowEnabled          *bool                            `json:"codex_ws_busy_overflow_enabled"`
 	CodexWSBusyPatienceSec              *int                             `json:"codex_ws_busy_patience_sec"`
 	CodexWSStatelessSlots               *int                             `json:"codex_ws_stateless_slots"`
+	CodexWSDownstreamKeepaliveSlots     *int                             `json:"codex_ws_downstream_keepalive_slots"`
 	GithubToken                         *string                          `json:"github_token"`
 	GithubProxyURL                      *string                          `json:"github_proxy_url"`
 	CodexOverloadPauseEnabled           *bool                            `json:"codex_overload_pause_enabled"`
@@ -10421,6 +10456,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		CodexWSBusyOverflowEnabled:          h.store.CodexWSBusyOverflowEnabled(),
 		CodexWSBusyPatienceSec:              h.store.CodexWSBusyPatienceSec(),
 		CodexWSStatelessSlots:               h.store.CodexWSStatelessSlots(),
+		CodexWSDownstreamKeepaliveSlots:     h.store.CodexWSDownstreamKeepaliveSlots(),
 		GithubTokenConfigured:               h.store.GithubToken() != "",
 		GithubProxyURL:                      h.store.GithubProxyURL(),
 		CodexOverloadPauseEnabled:           runtimeCfg.CodexOverloadPauseEnabled,
@@ -11276,6 +11312,13 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		log.Printf("设置已更新: codex_ws_stateless_slots = %d", v)
 	}
 
+	if req.CodexWSDownstreamKeepaliveSlots != nil {
+		v := database.NormalizeCodexWSDownstreamKeepaliveSlots(*req.CodexWSDownstreamKeepaliveSlots)
+		h.store.SetCodexWSDownstreamKeepaliveSlots(v)
+		runtimeCfg.CodexWSDownstreamKeepaliveSlots = v
+		log.Printf("设置已更新: codex_ws_downstream_keepalive_slots = %d", v)
+	}
+
 	// GitHub 访问设置（issue #522）。token 不回显也不落日志，空串表示清除。
 	if req.GithubToken != nil {
 		v := strings.TrimSpace(*req.GithubToken)
@@ -12017,6 +12060,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexWSBusyOverflowEnabled:          h.store.CodexWSBusyOverflowEnabled(),
 		CodexWSBusyPatienceSec:              h.store.CodexWSBusyPatienceSec(),
 		CodexWSStatelessSlots:               h.store.CodexWSStatelessSlots(),
+		CodexWSDownstreamKeepaliveSlots:     h.store.CodexWSDownstreamKeepaliveSlots(),
 		GithubToken:                         h.store.GithubToken(),
 		GithubProxyURL:                      h.store.GithubProxyURL(),
 		CodexOverloadPauseEnabled:           runtimeCfg.CodexOverloadPauseEnabled,
@@ -12411,6 +12455,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		CodexWSBusyOverflowEnabled:          h.store.CodexWSBusyOverflowEnabled(),
 		CodexWSBusyPatienceSec:              h.store.CodexWSBusyPatienceSec(),
 		CodexWSStatelessSlots:               h.store.CodexWSStatelessSlots(),
+		CodexWSDownstreamKeepaliveSlots:     h.store.CodexWSDownstreamKeepaliveSlots(),
 		GithubTokenConfigured:               h.store.GithubToken() != "",
 		GithubProxyURL:                      h.store.GithubProxyURL(),
 		CodexOverloadPauseEnabled:           runtimeCfg.CodexOverloadPauseEnabled,
