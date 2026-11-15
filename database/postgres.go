@@ -4687,6 +4687,8 @@ type UsageLogInput struct {
 	UpstreamErrorKind      string
 	ErrorMessage           string
 	PromptPolicyIncidentID string
+	// CreatedAt records request completion time for usage_logs.created_at.
+	CreatedAt time.Time
 	// UpstreamCost is independent from account_billed/user_billed and is only
 	// populated when a Sub2API-style multiplier probe succeeded.
 	UpstreamCost           float64
@@ -5173,6 +5175,14 @@ func nullablePromptPolicyIncidentID(value string) any {
 		return nil
 	}
 	return value
+}
+
+// usageLogCreatedAtArg keeps buffered usage logs anchored to request completion time.
+func (db *DB) usageLogCreatedAtArg(createdAt time.Time) any {
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	return db.timeArg(createdAt.UTC())
 }
 
 // nullableUpstreamResponseModel 空串写 NULL（=上游未自报），非空写原值。
@@ -5750,52 +5760,6 @@ func topUsageStats[K comparable, T any](byKey map[K]*T, limit int, less func(a, 
 		out[i] = *item
 	}
 	return out
-}
-
-// GetTrafficSnapshot 获取近实时流量快照
-func (db *DB) GetTrafficSnapshot(ctx context.Context) (*TrafficSnapshot, error) {
-	if db.isSQLite() {
-		return db.getTrafficSnapshotSQLite(ctx)
-	}
-
-	snapshot := &TrafficSnapshot{}
-	query := `
-	WITH per_second AS (
-		SELECT
-			date_trunc('second', created_at) AS sec,
-			COUNT(*)::float8 AS req_count,
-			COALESCE(SUM(total_tokens), 0)::float8 AS token_count
-		FROM usage_logs
-		WHERE created_at >= NOW() - INTERVAL '5 minutes'
-		  AND TRIM(COALESCE(internal_reason, '')) = ''
-		GROUP BY 1
-	),
-	current_window AS (
-		SELECT
-			COALESCE(SUM(req_count), 0)::float8 AS req_10s,
-			COALESCE(SUM(token_count), 0)::float8 AS tok_10s
-		FROM per_second
-		WHERE sec >= date_trunc('second', NOW() - INTERVAL '10 seconds')
-	)
-	SELECT
-		COALESCE((SELECT req_10s FROM current_window), 0) / 10.0 AS qps,
-		COALESCE(MAX(req_count), 0) AS qps_peak,
-		COALESCE((SELECT tok_10s FROM current_window), 0) / 10.0 AS tps,
-		COALESCE(MAX(token_count), 0) AS tps_peak
-	FROM per_second
-	`
-
-	err := db.conn.QueryRowContext(ctx, query).Scan(
-		&snapshot.QPS,
-		&snapshot.QPSPeak,
-		&snapshot.TPS,
-		&snapshot.TPSPeak,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return snapshot, nil
 }
 
 // ListRecentUsageLogs 获取最近的请求日志
