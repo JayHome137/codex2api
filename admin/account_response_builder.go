@@ -79,6 +79,7 @@ func (h *Handler) buildAccountResponse(
 	isGrokAccount := strings.EqualFold(upstreamType, auth.UpstreamGrok)
 	isAntigravityAccount := strings.EqualFold(upstreamType, auth.UpstreamAntigravity)
 	isClaudeAccount := strings.EqualFold(upstreamType, auth.UpstreamClaude)
+	isKiroAccount := strings.EqualFold(upstreamType, auth.UpstreamKiro)
 	antigravityAuthKind := ""
 	if isAntigravityAccount {
 		if strings.TrimSpace(row.GetCredential("api_key")) != "" {
@@ -273,6 +274,11 @@ func (h *Handler) buildAccountResponse(
 		Sub2UpstreamRateProbeAt:      strings.TrimSpace(row.GetCredential("sub2_upstream_rate_probe_at")),
 		Sub2UpstreamRateProbeError:   strings.TrimSpace(row.GetCredential("sub2_upstream_rate_probe_error")),
 		ClaudeAuthKind:               claudeAuthKindForRow(row, isClaudeAccount),
+		KiroAPI:                      isKiroAccount,
+		KiroAuthKind:                 kiroAuthKindForRow(row, isKiroAccount),
+		KiroLoginSource:              kiroRowString(row, auth.KiroLoginSourceCredentialKey, isKiroAccount),
+		KiroUsage:                    kiroUsageForRow(row, isKiroAccount),
+		KiroPlan:                     kiroPlanForRow(row, isKiroAccount),
 		ClaudeBaseURL:                row.GetCredential(auth.ClaudeBaseURLCredentialKey),
 		AntigravityAuthKind:          antigravityAuthKind,
 		AgentIdentity:                isAgentIdentityCredentialRow(row),

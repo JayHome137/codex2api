@@ -31,6 +31,7 @@ const (
 	modelBackingRelay
 	modelBackingAntigravity
 	modelBackingClaude
+	modelBackingKiro
 )
 
 type scopedModelRecord struct {
@@ -38,6 +39,8 @@ type scopedModelRecord struct {
 	created int64
 	backing modelBacking
 	alias   bool
+	// imageInput carries the Kiro channel's image-input contract into the manifest.
+	imageInput bool
 }
 
 func stableModelCreated(t time.Time) int64 {
@@ -82,6 +85,8 @@ func scopedModelOwner(record *scopedModelRecord) string {
 		return "google"
 	case modelBackingClaude:
 		return "anthropic"
+	case modelBackingKiro:
+		return "kiro"
 	default:
 		return "codex2api"
 	}
@@ -236,6 +241,16 @@ func (h *Handler) scopedModelRecords(ctx context.Context, row *database.APIKeyRo
 				addTarget(id)
 			}
 
+		case account.IsKiro():
+			for _, id := range KiroAccountModelIDs(account) {
+				key := strings.ToLower(strings.TrimSpace(id))
+				addScopedModel(records, id, modelBackingKiro, time.Time{}, false)
+				if record := records[key]; record != nil {
+					record.imageInput = true
+				}
+				addTarget(id)
+			}
+
 		case account.IsClaudeOAuth():
 			// Claude Code OAuth 账号:账号维度暴露 claude 模型(owner=anthropic),
 			// 供下游客户端发现;调度/透传由 claude 原生路径处理。
@@ -300,6 +315,9 @@ func (h *Handler) scopedModelRecords(ctx context.Context, row *database.APIKeyRo
 	// request path applies the same source-name policy before mapping.
 	// Daybreak 另外校验目标程序模型，避免映射绕过该 Key 的权限名单。
 	for key, record := range records {
+		if record.backing != modelBackingKiro {
+			record.imageInput = false
+		}
 		if checkAPIKeyModel(record.id, row.Limits) != "" || h.daybreakMappedModelDenied(record.id, row.Limits) {
 			delete(records, key)
 		}
@@ -392,7 +410,7 @@ func (h *Handler) scopedModels(ctx context.Context, row *database.APIKeyRow) []a
 	models := make([]api.Model, 0, len(records))
 	for _, record := range records {
 		models = append(models, api.Model{
-			ID: record.id, Object: "model", Created: record.created, OwnedBy: scopedModelOwner(record),
+			ID: record.id, Object: "model", Created: record.created, OwnedBy: scopedModelOwner(record), ImageInput: record.imageInput,
 		})
 	}
 	sort.Slice(models, func(i, j int) bool {

@@ -109,6 +109,7 @@ type accountListSnapshotItem struct {
 	Antigravity         bool
 	Claude              bool
 	ClaudeAuthKind      string
+	KiroAuthKind        string
 	ClaudeUsageProbeAt  string
 	ClaudeUsageProbeErr string
 	SearchText          string
@@ -139,6 +140,11 @@ type accountListSummary struct {
 	RateLimited1h        int `json:"rate_limited_1h"`
 	Timeout15m           int `json:"timeout_15m"`
 	SelfServicePending   int `json:"self_service_pending"`
+
+	// KiroAuthKinds 按 social / idc / external_idp / api_key 计数，供 Kiro 页凭据类型筛选。
+	KiroAuthKinds map[string]int `json:"kiro_auth_kinds,omitempty"`
+	// HealthBanned 按健康档计数，与 health_tier=banned 筛选同口径（Banned 按 unauthorized 状态计数）。
+	HealthBanned int `json:"health_banned"`
 }
 
 type accountListDomainFacet struct {
@@ -228,8 +234,8 @@ func (h *Handler) resolveAccountOperationSelector(ctx context.Context, selector 
 		return nil, fmt.Errorf("selector is required")
 	}
 	channel := strings.ToLower(strings.TrimSpace(selector.Channel))
-	if channel != database.UpstreamChannelCodex && channel != database.UpstreamChannelGrok && channel != database.UpstreamChannelAntigravity && channel != database.UpstreamChannelClaude {
-		return nil, fmt.Errorf("selector channel must be codex, grok, antigravity, or claude")
+	if channel != database.UpstreamChannelCodex && channel != database.UpstreamChannelGrok && channel != database.UpstreamChannelAntigravity && channel != database.UpstreamChannelClaude && channel != database.UpstreamChannelKiro {
+		return nil, fmt.Errorf("selector channel must be codex, grok, antigravity, claude, or kiro")
 	}
 	snapshot, err := h.getAccountListSnapshot(ctx, channel)
 	if err != nil {
@@ -361,7 +367,10 @@ func validateAccountPageFilters(query accountPageQuery) error {
 	if !validStatuses[query.Status] {
 		return fmt.Errorf("unsupported status")
 	}
-	validAuthKinds := map[string]bool{"": true, "all": true, auth.GrokAuthKindOAuth: true, auth.GrokAuthKindAPIKey: true, auth.ClaudeAuthKindSetupToken: true}
+	validAuthKinds := map[string]bool{
+		"": true, "all": true, auth.GrokAuthKindOAuth: true, auth.GrokAuthKindAPIKey: true, auth.ClaudeAuthKindSetupToken: true,
+		auth.KiroAuthKindSocial: true, auth.KiroAuthKindIdC: true, auth.KiroAuthKindExternalIdP: true,
+	}
 	if !validAuthKinds[query.AuthKind] {
 		return fmt.Errorf("unsupported auth_kind")
 	}
@@ -716,6 +725,7 @@ func (h *Handler) buildAccountListSnapshotItem(row *database.AccountRow, request
 	isAntigravity := strings.EqualFold(upstreamType, auth.UpstreamAntigravity)
 	isOpenAIResponses := strings.EqualFold(upstreamType, auth.UpstreamOpenAIResponses)
 	isClaude := strings.EqualFold(upstreamType, auth.UpstreamClaude)
+	isKiro := strings.EqualFold(upstreamType, auth.UpstreamKiro)
 	email := row.GetCredential("email")
 	if isOpenAIResponses && email == "" {
 		email = row.GetCredential("base_url")
@@ -752,6 +762,7 @@ func (h *Handler) buildAccountListSnapshotItem(row *database.AccountRow, request
 		SchedulerPriority: valueOrZero(accountSchedulerPriority(row)), OpenAIResponses: isOpenAIResponses,
 		Antigravity: isAntigravity, AntigravityAuthKind: antigravityAuthKind, Claude: isClaude,
 		ClaudeAuthKind:      claudeAuthKindForRow(row, isClaude),
+		KiroAuthKind:        kiroAuthKindForRow(row, isKiro),
 		ClaudeUsageProbeAt:  row.GetCredential(auth.ClaudeUsageProbeAtCredentialKey),
 		ClaudeUsageProbeErr: row.GetCredential(auth.ClaudeUsageProbeErrorCredentialKey),
 	}
@@ -1298,6 +1309,10 @@ func accountListItemMatches(item *accountListSnapshotItem, query accountPageQuer
 			if item.GrokPlanCategory != query.Plan {
 				return false
 			}
+		} else if channel == database.UpstreamChannelKiro {
+			if auth.KiroPlanKey(item.PlanType) != query.Plan {
+				return false
+			}
 		} else if !strings.EqualFold(strings.TrimSpace(item.PlanType), query.Plan) {
 			return false
 		}
@@ -1315,6 +1330,11 @@ func accountListItemMatches(item *accountListSnapshotItem, query accountPageQuer
 		} else if channel == database.UpstreamChannelAntigravity {
 			// Antigravity 渠道:oauth=Google OAuth 凭据,api_key=Gemini API Key。
 			if item.AntigravityAuthKind != query.AuthKind {
+				return false
+			}
+		} else if channel == database.UpstreamChannelKiro {
+			// Kiro 渠道:social / idc / external_idp / api_key。
+			if item.KiroAuthKind != query.AuthKind {
 				return false
 			}
 		} else if item.OpenAIResponses != (query.AuthKind == auth.GrokAuthKindAPIKey) {
@@ -1424,7 +1444,7 @@ func accountListOverloadPaused(item *accountListSnapshotItem) bool {
 }
 
 func accountListUnsampled(item *accountListSnapshotItem) bool {
-	if item == nil || item.OpenAIResponses || item.GrokAuthKind != "" || item.Antigravity {
+	if item == nil || item.OpenAIResponses || item.GrokAuthKind != "" || item.Antigravity || item.KiroAuthKind != "" {
 		return false
 	}
 	if item.Status == "unauthorized" || item.Status == "error" {
@@ -1638,6 +1658,8 @@ func summarizeAccountList(items []*accountListSnapshotItem, channel string) (acc
 			summary.Warm++
 		case "risky":
 			summary.Risky++
+		case "banned":
+			summary.HealthBanned++
 		}
 		if item.GrokAuthKind == auth.GrokAuthKindOAuth {
 			summary.OAuth++
@@ -1660,6 +1682,12 @@ func summarizeAccountList(items []*accountListSnapshotItem, channel string) (acc
 			} else {
 				summary.OAuth++
 			}
+		}
+		if item.KiroAuthKind != "" {
+			if summary.KiroAuthKinds == nil {
+				summary.KiroAuthKinds = map[string]int{}
+			}
+			summary.KiroAuthKinds[item.KiroAuthKind]++
 		}
 		if channel == database.UpstreamChannelCodex {
 			if item.OpenAIResponses {
