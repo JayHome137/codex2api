@@ -1154,7 +1154,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/stats", h.GetStats)
 	api.GET("/key-usage-account-permissions/:id", h.GetKeyUsageAccountPermissions)
 	api.PUT("/key-usage-account-permissions/:id", h.SetKeyUsageAccountPermissions)
-	api.DELETE("/key-usage-reset-uncertain/:id", h.ClearKeyUsageResetUncertain)
 	api.GET("/accounts", h.ListAccounts)
 	api.GET("/accounts/analysis", h.GetAccountAnalysis)
 	api.GET("/accounts/page-stats", h.GetAccountPageStats)
@@ -1760,6 +1759,11 @@ type accountResponse struct {
 	GrokBilling                          json.RawMessage             `json:"grok_billing,omitempty"`
 	GrokRateLimit                        *auth.GrokRateLimitSnapshot `json:"grok_rate_limit,omitempty"`
 	GrokFreeQuota                        *auth.GrokFreeQuotaSnapshot `json:"grok_free_quota,omitempty"`
+	KiroAPI                              bool                        `json:"kiro_api,omitempty"`
+	KiroAuthKind                         string                      `json:"kiro_auth_kind,omitempty"`
+	KiroLoginSource                      string                      `json:"kiro_login_source,omitempty"`
+	KiroUsage                            json.RawMessage             `json:"kiro_usage,omitempty"`
+	KiroPlan                             string                      `json:"kiro_plan,omitempty"`
 	AvatarURL                            string                      `json:"avatar_url,omitempty"`
 	VerifiedEmail                        bool                        `json:"verified_email,omitempty"`
 	ProjectID                            string                      `json:"project_id,omitempty"`
@@ -4945,6 +4949,7 @@ type importSettings struct {
 	importProxies  bool
 	allowDuplicate bool
 	customHeaders  map[string]string
+	timezone       string
 }
 
 // proxyForToken 返回该条目最终生效的代理：文件内代理优先，缺失时回落表单值。
