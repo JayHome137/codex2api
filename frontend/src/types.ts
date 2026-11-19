@@ -1,6 +1,6 @@
 export type ToastType = 'success' | 'error' | 'warning' | 'info'
 export type ISODateString = string
-export type UpstreamChannel = 'codex' | 'grok' | 'antigravity' | 'claude'
+export type UpstreamChannel = 'codex' | 'grok' | 'antigravity' | 'claude' | 'kiro'
 
 export type ChannelMonitorStatus = 'unknown' | 'operational' | 'degraded' | 'failed'
 export type ChannelMonitorBillingStatus = 'unknown' | 'ok' | 'unsupported' | 'failed'
@@ -102,9 +102,47 @@ export interface ChannelTestSettings {
 export interface ChannelTestSettingsResponse {
   antigravity: ChannelTestSettings
   claude: ChannelTestSettings
+  kiro: ChannelTestSettings
   default_test_content: string
   default_test_concurrency: number
-  model_choices?: Partial<Record<'antigravity' | 'claude', string[]>>
+  model_choices?: Partial<Record<'antigravity' | 'claude' | 'kiro', string[]>>
+}
+
+export interface KiroSettings {
+  api_domain: 'amazonaws' | 'kiro'
+  cache_simulation: boolean
+}
+
+/** Kiro 额度快照：基础额度 + 免费试用 + 赠送额度。 */
+export interface KiroUsageSnapshot {
+  subscription_title?: string
+  subscription_type?: string
+  used: number
+  limit: number
+  base_used: number
+  base_limit: number
+  bonus_used: number
+  bonus_limit: number
+  trial_used: number
+  trial_limit: number
+  next_reset_at?: string
+  credits_expire_at?: string
+  overage_status?: string
+  fetched_at: string
+}
+
+export interface KiroImportResponse {
+  imported: number
+  failed: number
+  results: Array<{ index: number; id?: number; email?: string; warnings?: string[]; error?: string }>
+}
+
+export interface KiroDeviceLoginStart {
+  session: string
+  user_code: string
+  verification_uri_complete: string
+  interval: number
+  expires_at: string
 }
 
 export interface AntigravityRedirectChoice {
@@ -410,6 +448,14 @@ export interface AccountRow {
   grok_api?: boolean
   antigravity_api?: boolean
   claude_api?: boolean
+  kiro_api?: boolean
+  /** Kiro 凭据形态：social / idc / external_idp / api_key。 */
+  kiro_auth_kind?: string
+  /** Kiro 登录来源：Google / Github / BuilderId / Enterprise 等。 */
+  kiro_login_source?: string
+  kiro_usage?: KiroUsageSnapshot
+  /** Kiro 套餐标识（按订阅标题归一）：kiro free / pro / pro+ / max / power / student。 */
+  kiro_plan?: string
   /** Claude 凭据形态(仅 Claude 账号有值)。 */
   claude_auth_kind?: ClaudeAuthKind | string
   claude_base_url?: string
@@ -605,6 +651,10 @@ export interface AccountListSummary {
   api_key: number
   /** Claude 渠道:长效 Setup Token 账号数。 */
   setup_token?: number
+  /** Kiro 渠道:按 social / idc / external_idp / api_key 计数。 */
+  kiro_auth_kinds?: Record<string, number>
+  /** 健康档为 banned 的账号数（与 health_tier=banned 筛选同口径）。 */
+  health_banned?: number
   subscription_unlocked: number
   unauthorized_24h: number
   rate_limited_1h: number
@@ -1039,6 +1089,7 @@ export interface AddAccountRequest {
   refresh_token?: string
   session_token?: string
   proxy_url: string
+  timezone?: string
   allow_duplicate?: boolean
   custom_headers?: Record<string, string> | null
   /** 添加/导入时直接绑定的账号分组；命中已存在账号时不改其分组。 */
@@ -1049,6 +1100,7 @@ export interface AddATAccountRequest {
   name?: string
   access_token: string
   proxy_url: string
+  timezone?: string
   allow_duplicate?: boolean
   custom_headers?: Record<string, string> | null
   /** 添加/导入时直接绑定的账号分组；命中已存在账号时不改其分组。 */
@@ -1060,6 +1112,7 @@ export interface ImportAgentIdentityRequest {
   name?: string
   auth_json: string
   proxy_url?: string
+  timezone?: string
 }
 
 export interface ImportAgentIdentityResponse {
@@ -1072,6 +1125,7 @@ export interface ImportAgentIdentityResponse {
 export interface AgentIdentityBatchImportRequest {
   files: string[]
   proxy_url?: string
+  timezone?: string
 }
 
 export interface AgentIdentityImportItem {
@@ -3391,6 +3445,8 @@ export interface ModelsResponse {
   grok_models?: string[]
   // Claude 渠道账号声明模型的并集;渠道选 claude 时模型下拉用这份
   claude_models?: string[]
+  // Kiro 渠道账号模型目录的并集;渠道选 kiro 时模型下拉用这份
+  kiro_models?: string[]
   items?: ModelInfo[]
   last_synced_at?: string
   source_url: string
@@ -3398,7 +3454,7 @@ export interface ModelsResponse {
 }
 
 export interface ChannelModelRefreshResult {
-  channel: 'codex' | 'claude' | 'grok' | 'antigravity' | string
+  channel: 'codex' | 'claude' | 'grok' | 'antigravity' | 'kiro' | string
   groups?: number
   refreshed: number
   failed: number

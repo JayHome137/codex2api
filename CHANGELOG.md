@@ -1,5 +1,77 @@
 # Changelog
 
+## v3.1.7 - 2026-11-18
+
+### Features
+
+- **Kiro accounts can serve Messages, Responses and Chat Completions over HTTP (#840, #884, #886, #888, #893, @wangbingnan136).** Administrators can sign in or import credentials, manage accounts and groups, and sync credits and model catalogs. The gateway recognizes Max and Student plans, refreshes the Student catalog with the current IDE version, and pauses accounts with exhausted credits until the upstream allowance recovers. The protocol adapter is based on `kiro.rs`.
+
+- **The built-in Codex catalog includes GPT-6.2 Astra and Sol (#895, @mianfeikejiwl).** Adds model metadata and pricing for cached tokens, long contexts and Ultrafast requests. Historical usage uses each record's timestamp to select the applicable Ultrafast multiplier. The built-in Codex CLI version and default minimum are now `0.170.0`.
+
+- **Codex accounts can bind a timezone before their first request (#890, requested by @skybbk1001).** Token entry, OAuth, Session JSON, Agent Identity and batch imports accept an optional IANA timezone. The first database record and runtime account use the selected value. Reimports and reauthorization preserve an existing account's binding.
+
+- **Codex official-format request compatibility is configurable (#891, @Alexander4731).** Optional settings control per-account installation IDs, generated attestation and preservation of message IDs and metadata on qualifying Responses requests. The settings apply to HTTP and WebSocket requests and are disabled by default.
+
+- **API Key holders have a dedicated account-usage tab (#879, @Blaskyy).** The portal separates account usage from the key's own quota and uses the same plan badges and usage bars as the admin page. Per-key permissions save across edit tabs. Reset requests retain authorization, idempotency, workspace leases and cooldowns. The manual uncertain-reset clearing endpoint and response field have been removed.
+
+### Fixes
+
+- **Chat Completions preserves the developer role in Codex Responses (#889, reported by @mice33, #892, @koeria).** Developer messages previously became user messages during translation. Both plain-text and multipart messages retain their role, content and position.
+
+- **Image usage statistics show the model reported by the upstream (#882, reported by @MagnetOscar, #887, @koeria).** Streaming and non-streaming requests record the upstream model alongside the requested model. When there is no local mapping, a reported image model can supply the effective model used for aggregation.
+
+- **Antigravity handles OpenMausBot and OpenCode client text more consistently (#883, #885, @frank8ai).** Normalization recognizes additional client preambles and OpenMausBot notices across message and tool content. Regression coverage includes Markdown code spans and fenced blocks.
+
+- **Frontend builds guard against the picomatch ReDoS advisory (GHSA-fc5q-39xc-vjpf).** A checksum-verified patch protects the pinned build dependency when it compiles repeated wildcard patterns. Tailwind's build tools are development dependencies, and production dependency audits no longer need an exception for this advisory.
+
+## v3.1.6 - 2026-11-14
+
+### Features
+
+- **API Key holders can view account usage and use reset credits when enabled (#878, @Blaskyy).** Adds account names, email addresses, usage windows and cached reset-credit counts to the self-service quota page, with group, channel, plan and account-side authorization checks. Global viewing and reset switches default to off; individual keys inherit the global policy unless restricted. Reset requests require an unexpired key and affect the shared upstream workspace. PostgreSQL and SQLite migrations add permission, request-deduplication, lease, cooldown and pending-reconciliation records, with an administrator action to clear unresolved reset state. Expired keys retain read access when viewing is enabled.
+
+### Fixes
+
+- **Antigravity Gemini `-xhigh` variants inherit base-model pricing (#877, @yanhao98).** Recognizes the `-xhigh` suffix during pricing alias resolution, so variants such as `gemini-4-hydrogen-xhigh` inherit synchronized base-model prices while retaining independent management keys and explicit custom-price overrides.
+
+- **Public portal browser titles reflect the current page.** API Key usage tabs show the active overview, quota or request-log section together with the site name. Image Studio and account-contribution portals use their own titles instead of the administrator label. Titles follow language and branding changes, and the initial HTML title no longer labels every page as an admin panel.
+
+## v3.1.5 - 2026-11-12
+
+### Features
+
+- **GPT Image 2.6 joins the model catalog and Image Studio (#872, @ShaoWenbinSaleh).** Adds `gpt-image-2.6`, `gpt-image-2.6-flare` and `gpt-image-2.6-sunburst`, including dated snapshots and `-2k` / `-4k` aliases, with `xhigh` / `max` quality support. Built-in pricing and image-token billing recognize the new family and its separate text, image and cached inputs. Omitting the image model still defaults to `gpt-image-2`.
+
+- **Automatic intelligence checks can be enabled independently for each account source (#860, @reallyfeishi).** Codex, Claude, Grok and Antigravity have separate source switches and detection models; Grok and Antigravity now use their dedicated executors. Source identity follows the account rather than the model name. Existing configurations keep Codex and Claude enabled and the two new sources disabled, while the global and per-account switches still apply. Disabling a source stops admission of its automatic tasks without removing enrollment, history or existing actions; manual checks remain available. Older clients that omit the new settings preserve their saved values.
+
+### Fixes
+
+- **Automatic intelligence checks wait for rate limits and exhausted quotas to recover (#868, requested by @Torrekie).** Due and already-queued automatic checks now consult account, usage-window, provider-family and detection-model limits before sending a request. Held checks create no result and preserve streaks, backoff and the latest outcome; they are reconsidered at the expected recovery time or within one normal interval. The UI shows a quota-wait state. An upstream quota rejection during a check is recorded as `interrupted` rather than `error`. Manual checks remain available, and accounts paused only by automatic usage thresholds can still be probed.
+
+- **Expired 5h snapshots no longer renew a quota cooldown indefinitely (#862, reported by @priyanshrv-netizen; #871, @koeria).** HTTP usage-header and WebSocket usage-frame processing now require an exhausted 5h snapshot to have a future reset time before marking the account limited. A stale 100% observation cannot fabricate another five-hour window after reset; active exhausted windows and independent weekly limits still apply.
+
+- **Failed persistence of cleared usage cooldowns and errors is retried (#813, reported by @ruirui688; #875, @koeria).** A transient database failure while clearing a cooldown used to leave an old 7d limit in storage even after the runtime account recovered; a later account reload could restore it and cause persistent 429s. Pending clears now survive the transition to ready and are retried on usage-frame publication, including failed error clears.
+
+- **Claude OAuth can recover after a transient 401 (#867, reported by @AceCandy; #870, @koeria).** Refreshable OAuth accounts exchange their token under the shared refresh lease and retry the upstream request at most once before treating a 401 as an authentication failure. A successful refresh clears stale unauthorized, disabled and banned state without discarding unrelated cooldowns. Revoked refresh tokens retain bounded permanent-failure backoff; API-key and Setup Token accounts do not enter the OAuth retry path.
+
+- **Antigravity identity revalidation recovers automatically after transient network failures (#863 / #864, @yanhao98).** A failed `/userinfo` transport attempt after token exchange no longer leaves an account permanently excluded from background quota synchronization. Eligible transport failures get up to two short retries, and pending identity checks remain in the background recovery schedule. HTTP errors, caller cancellation and TLS certificate verification failures are not retried by this mechanism. Accounts stay fenced until validation completes, and the original Google subject and principal-transition fence survive repeated refreshes and failed persistence.
+
+- **Antigravity Argon and Gemini quota cooldowns no longer block each other (#856, @reallyfeishi).** Quota rejection writes and local/shared-cache admission now use separate family keys. Models in the same family still share limits, while the ambiguous legacy Gemini-wide cooldown key no longer blocks both pools. Backing-model metadata remains a fallback for identifying the family, and upstream deadlines are preserved.
+
+- **OpenAI Responses API-key relay accounts can generate and edit images (#820, reported by @freedomcatjin; #873, @koeria).** The image account filter previously excluded relay accounts, so a relay-only pool returned no available accounts even when its upstream supported image generation. Eligible Responses relays now send image requests through their configured `/responses` executor over HTTP. The upstream must still support the image-generation tool; Claude, Grok and Antigravity accounts remain outside this Codex image path.
+
+- **New API relay balances are converted from quota units to USD (#815, reported by @cnzjy; #874, @koeria).** Balance lookup uses the smaller token/user remaining quota when both are available and converts it with the upstream `/api/status` value of `quota_per_unit`. If conversion is unavailable, it falls back to billing endpoints. Unlimited-token responses and the billing sentinel are recognized instead of displayed as a fabricated cash balance.
+
+- **Account list navigation no longer waits for request-log aggregation (#866, reported by @10373064; #869, @koeria).** Paged lists return cached request counts while missing totals or model/error breakdowns are filled in the background. Antigravity and Claude pages poll for completed statistics and resume polling when the browser tab becomes visible. Changing an Antigravity filter resets pagination before fetching, avoiding a redundant request for the previous page.
+
+- **Usage log timestamps retain request completion time (#857, reported by @yanhao98).** PostgreSQL and SQLite batch inserts now write the timestamp captured when a request enters the usage buffer instead of assigning one flush timestamp to the entire batch. Hourly rollups therefore use the completion hour, and live traffic statistics also count this instance's unflushed entries to avoid artificial flush-interval spikes. SQLite retains its UTC second-precision format. Existing history is not rewritten; incremental consumers should paginate by log ID rather than treating `created_at` as insertion order.
+
+- **Forced Codex client identity takes precedence over device stabilization (#859, @bxb1337).** Device fingerprint stabilization previously returned early and bypassed the selected forced identity. Both HTTP and WebSocket requests now honor the configured force-mode client, including Desktop.
+
+- **The intelligence question editor works on plain HTTP origins (#825, reported by @depress77; #876, @koeria).** When `crypto.randomUUID` is unavailable, question IDs use a UUID v4 fallback backed by `crypto.getRandomValues`, so adding a question can still open its editor.
+
+- **Go and compression dependencies include security fixes (#859, @bxb1337).** Raises the Go toolchain and Docker builder to 1.26.11 and updates Brotli to 1.2.7 and klauspost/compress to 1.20.2, addressing GO-2026-6859, GO-2026-6888 and GO-2026-6865. Source builds require Go 1.26.11 or newer.
+
 ## v3.1.4 - 2026-11-05
 
 ### Fixes
