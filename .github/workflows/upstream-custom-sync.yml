@@ -122,6 +122,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           merge_had_conflicts=false
           preserved_conflict_paths=()
+          manual_review_paths=()
           preserved_report=$(mktemp)
           if ! git merge --no-edit --no-commit --no-ff "$main_sha"; then
             merge_had_conflicts=true
@@ -135,14 +136,15 @@ jobs:
             mapfile -t conflicted_paths < <(git diff --name-only --diff-filter=U)
             for path in "${conflicted_paths[@]}"; do
               if is_custom_preserve_path "$path"; then
-                # Custom content stays. Record the upstream delta this drops
-                # so a reviewer can put non-conflicting additions back.
+                # Keep custom edits in overlapping hunks, while merging
+                # upstream edits that do not overlap. README.md is maintained
+                # as a complete custom homepage.
                 preserved_conflict_paths+=("$path")
                 upstream_delta=$(git diff --no-color --unified=3 "$merge_base" "$main_sha" -- "$path" || true)
                 {
                   echo "### \`$path\`"
                   echo
-                  echo "Kept the custom file. Upstream changes since the merge base that were not applied:"
+                  echo "Upstream changes since the merge base. Non-overlapping edits are merged, while overlapping hunks keep the custom version:"
                   echo
                   if [[ -z "$upstream_delta" ]]; then
                     echo "_No textual upstream delta._"
@@ -157,7 +159,22 @@ jobs:
                   fi
                   echo
                 } >> "$preserved_report"
-                git checkout --ours -- "$path" 2>/dev/null || git rm -f --ignore-unmatch -- "$path"
+                if [[ "$path" == "README.md" ]]; then
+                  git checkout --ours -- "$path" 2>/dev/null || git rm -f --ignore-unmatch -- "$path"
+                elif [[ -f "$path" ]] && git cat-file -e "$merge_base:$path" 2>/dev/null && git cat-file -e "$main_sha:$path" 2>/dev/null; then
+                  base_file=$(mktemp)
+                  upstream_file=$(mktemp)
+                  git show "$merge_base:$path" > "$base_file"
+                  git show "$main_sha:$path" > "$upstream_file"
+                  if ! git merge-file --ours -L custom -L common-base -L upstream "$path" "$base_file" "$upstream_file"; then
+                    manual_review_paths+=("$path")
+                    git checkout --ours -- "$path" 2>/dev/null || git rm -f --ignore-unmatch -- "$path"
+                  fi
+                  rm -f "$base_file" "$upstream_file"
+                else
+                  manual_review_paths+=("$path")
+                  git checkout --ours -- "$path" 2>/dev/null || git rm -f --ignore-unmatch -- "$path"
+                fi
               else
                 git checkout --theirs -- "$path" 2>/dev/null || git rm -f --ignore-unmatch -- "$path"
               fi
@@ -218,7 +235,7 @@ jobs:
             if ((${#preserved_conflict_paths[@]} > 0)); then
               {
                 echo
-                echo "Preserve-list files conflicted. Custom content was kept whole, and this PR will not auto-merge or publish a release:"
+                echo "Custom-owned files required conflict resolution. Non-overlapping upstream changes were merged, and overlapping hunks retain the custom version:"
                 for path in "${preserved_conflict_paths[@]}"; do
                   echo "- \`$path\`"
                 done
@@ -249,19 +266,20 @@ jobs:
             echo "expected=${custom_sha} actual=${pr_head_sha:-<empty>}" >&2
             exit 1
           fi
-          if ((${#preserved_conflict_paths[@]} > 0)); then
-            # Checks still run so the open PR is reviewable. Auto-merge and
-            # Publish Custom Release stay off until a person merges it.
+          if ((${#manual_review_paths[@]} > 0)); then
+            # Keep the PR open if a custom file could not be safely merged.
             gh label create preserve-conflict \
               --repo "$GITHUB_REPOSITORY" \
-              --description "Preserve-list merge kept custom and dropped upstream hunks" \
+              --description "Custom conflict needs manual review" \
               --color B60205 >/dev/null 2>&1 || true
             gh pr edit "$pr_number" --repo "$GITHUB_REPOSITORY" --add-label preserve-conflict >/dev/null 2>&1 || true
             comment_file=$(mktemp)
             {
-              echo "Preserve-list files conflicted. Each file below was kept from \`${TARGET_BRANCH}\` so custom content is unchanged."
+              echo "Some custom-owned files could not be merged at the hunk level and were kept from \`${TARGET_BRANCH}\`. Manual review is required for these files:"
               echo
               echo "This PR will not auto-merge, and no release will be published until it is merged by a reviewer."
+              echo
+              printf '%s\n' "${manual_review_paths[@]}"
               echo
               cat "$preserved_report"
             } > "$comment_file"
@@ -270,9 +288,9 @@ jobs:
             {
               echo "### Custom synchronization"
               echo
-              echo "Opened ${pr_url} for review because preserve-list files conflicted."
+              echo "Opened ${pr_url} for manual review because some custom files could not be merged automatically."
               echo "- PR: ${pr_url}"
-              echo "- files: ${preserved_conflict_paths[*]}"
+              echo "- files: ${manual_review_paths[*]}"
               echo "- auto-merge: withheld"
               echo "- release: not dispatched"
             } >> "$GITHUB_STEP_SUMMARY"

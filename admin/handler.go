@@ -149,6 +149,18 @@ type Handler struct {
 	reqCountCache      map[string]*requestCountCacheEntry
 	reqCountRefreshMu  sync.Mutex
 	reqCountRefreshing map[string]bool
+	// reqCountRefreshBreakdown is true while the in-flight channel refresh
+	// includes error-code and model breakdowns (small pools). The paged list
+	// reuses that scan instead of starting a second one.
+	reqCountRefreshBreakdown map[string]bool
+	// pageRequestCountHook, when set, replaces the usage-log aggregation.
+	// Production leaves it nil. Tests use it to simulate a slow scan.
+	pageRequestCountHook func(context.Context, []int64) (map[int64]*database.AccountRequestCount, error)
+	// Visible-page breakdowns for pools whose channel cache stores totals
+	// only. Filled off the list request.
+	pageBreakdownMu       sync.Mutex
+	pageBreakdown         map[string]*pageRequestBreakdown
+	pageBreakdownInflight map[string]string
 	// 大池分批聚合的断点续跑半成品,见 requestCountStaging。
 	reqCountStagingMu sync.Mutex
 	reqCountStaging   map[string]*requestCountStaging
@@ -1027,6 +1039,8 @@ func parseUsageChannel(c *gin.Context) string {
 		return database.UpstreamChannelAntigravity
 	case database.UpstreamChannelClaude:
 		return database.UpstreamChannelClaude
+	case database.UpstreamChannelKiro:
+		return database.UpstreamChannelKiro
 	}
 	return ""
 }
@@ -1104,6 +1118,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	keyUsage.GET("/summary", h.GetPublicAPIKeyUsageSummary)
 	keyUsage.GET("/me", h.GetPublicAPIKeyUsageSummary)
 	keyUsage.GET("/concurrency", h.GetPublicAPIKeyConcurrency)
+	keyUsage.GET("/accounts", h.GetPublicKeyUsageAccounts)
+	keyUsage.POST("/accounts/:id/reset-credits", h.ResetPublicKeyUsageAccountCredits)
 
 	// 账号自助添加公开门户（无 admin 鉴权；开关门控 + IP 限流；见 self_service.go）
 	accountPortal := r.Group("/api/account-portal")
@@ -1140,6 +1156,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		}
 	})
 	api.GET("/stats", h.GetStats)
+	api.GET("/key-usage-account-permissions/:id", h.GetKeyUsageAccountPermissions)
+	api.PUT("/key-usage-account-permissions/:id", h.SetKeyUsageAccountPermissions)
 	api.GET("/accounts", h.ListAccounts)
 	api.GET("/accounts/analysis", h.GetAccountAnalysis)
 	api.GET("/accounts/page-stats", h.GetAccountPageStats)
@@ -1175,6 +1193,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/claude/export", h.ExportClaudeAccounts)
 	api.POST("/accounts/:id/claude/models", h.RefreshClaudeModels)
 	api.POST("/accounts/claude/models/refresh", h.RefreshAllClaudeModels)
+	h.registerKiroRoutes(api)
 	api.POST("/accounts/antigravity", h.AddAntigravityAccount)
 	api.POST("/accounts/antigravity/models", h.FetchAntigravityModels)
 	api.POST("/accounts/antigravity/batch-models", h.BatchUpdateAntigravityModels)
@@ -1317,6 +1336,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.PUT("/settings/channel-tests", h.UpdateChannelTestSettings)
 	api.GET("/settings/antigravity", h.GetAntigravitySettings)
 	api.PUT("/settings/antigravity", h.UpdateAntigravitySettings)
+	api.GET("/settings/kiro", h.GetKiroSettings)
+	api.PUT("/settings/kiro", h.UpdateKiroSettings)
 	api.POST("/settings/background-upload", h.UploadBackgroundAsset)
 	api.POST("/settings/image-storage/test", h.TestImageStorageConnection)
 	api.GET("/prompt-filter/logs", h.ListPromptFilterLogs)
@@ -1579,6 +1600,7 @@ func summarizeDashboardAccounts(rows []*database.AccountRow, runtimeAccounts []*
 		database.UpstreamChannelGrok:        {},
 		database.UpstreamChannelAntigravity: {},
 		database.UpstreamChannelClaude:      {},
+		database.UpstreamChannelKiro:        {},
 	}
 	counts.total = len(rows)
 	for _, row := range rows {
@@ -1595,6 +1617,8 @@ func summarizeDashboardAccounts(rows []*database.AccountRow, runtimeAccounts []*
 			channel = database.UpstreamChannelAntigravity
 		} else if strings.EqualFold(upstreamType, auth.UpstreamClaude) {
 			channel = database.UpstreamChannelClaude
+		} else if strings.EqualFold(upstreamType, auth.UpstreamKiro) {
+			channel = database.UpstreamChannelKiro
 		}
 		usingCredits := false
 		acc := runtimeByID[row.ID]
@@ -1610,6 +1634,8 @@ func summarizeDashboardAccounts(rows []*database.AccountRow, runtimeAccounts []*
 				channel = database.UpstreamChannelGrok
 			} else if acc.IsClaudeOAuth() {
 				channel = database.UpstreamChannelClaude
+			} else if acc.IsKiro() {
+				channel = database.UpstreamChannelKiro
 			}
 		}
 		perChannel := channelCounts[channel]
@@ -1643,7 +1669,7 @@ func isDashboardAbnormalAccount(status string) bool {
 
 func isDashboardUnsampledAccount(row *database.AccountRow, acc *auth.Account) bool {
 	if acc != nil {
-		if acc.IsGrokAPI() || acc.IsOpenAIResponsesAPI() || acc.IsAntigravityAPI() {
+		if acc.IsGrokAPI() || acc.IsOpenAIResponsesAPI() || acc.IsAntigravityAPI() || acc.IsKiro() {
 			return false
 		}
 		snapshot := acc.GetAccountListRuntimeSnapshot()
@@ -1664,7 +1690,8 @@ func isDashboardUnsampledAccount(row *database.AccountRow, acc *auth.Account) bo
 	upstreamType := strings.TrimSpace(row.GetCredential("upstream_type"))
 	if strings.EqualFold(upstreamType, auth.UpstreamGrok) ||
 		strings.EqualFold(upstreamType, auth.UpstreamOpenAIResponses) ||
-		strings.EqualFold(upstreamType, auth.UpstreamAntigravity) {
+		strings.EqualFold(upstreamType, auth.UpstreamAntigravity) ||
+		strings.EqualFold(upstreamType, auth.UpstreamKiro) {
 		return false
 	}
 	status := strings.ToLower(strings.TrimSpace(row.Status))
@@ -1712,6 +1739,7 @@ type accountResponse struct {
 	// 套餐（api/无到期时间的 free）为空。
 	Subscription          *auth.SubscriptionStatusView `json:"subscription,omitempty"`
 	Status                string                       `json:"status"`
+	QuotaPauseWindow      string                       `json:"quota_pause_window,omitempty"`
 	ErrorMessage          string                       `json:"error_message,omitempty"`
 	ATOnly                bool                         `json:"at_only"`
 	CreditEnabled         bool                         `json:"credit_enabled"`
@@ -1727,6 +1755,11 @@ type accountResponse struct {
 	AntigravityAPI                       bool                        `json:"antigravity_api,omitempty"`
 	ClaudeAPI                            bool                        `json:"claude_api,omitempty"`
 	ClaudeAuthKind                       string                      `json:"claude_auth_kind,omitempty"`
+	KiroAPI                              bool                        `json:"kiro_api,omitempty"`
+	KiroAuthKind                         string                      `json:"kiro_auth_kind,omitempty"`
+	KiroLoginSource                      string                      `json:"kiro_login_source,omitempty"`
+	KiroUsage                            json.RawMessage             `json:"kiro_usage,omitempty"`
+	KiroPlan                             string                      `json:"kiro_plan,omitempty"`
 	ClaudeBaseURL                        string                      `json:"claude_base_url,omitempty"`
 	AntigravityAuthKind                  string                      `json:"antigravity_auth_kind,omitempty"`
 	AgentIdentity                        bool                        `json:"agent_identity,omitempty"`
@@ -1990,16 +2023,16 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 
 	var reqCounts map[int64]*database.AccountRequestCount
 	var usage5h, usage7d map[int64]*database.AccountTimeRangeUsage
+	var requestCountsPending bool
 	if view == "page" {
 		pageIDs := make([]int64, 0, len(rows))
 		for _, row := range rows {
 			pageIDs = append(pageIDs, row.ID)
 		}
-		reqCounts, err = h.db.GetAccountRequestCountsByIDs(ctx, pageIDs)
-		if err != nil {
-			log.Printf("获取当前页账号请求统计失败: %v", err)
-			reqCounts = make(map[int64]*database.AccountRequestCount)
-		}
+		// Totals, error codes, and model mix scan usage_logs. A slow scan must
+		// not block the account rows: read the channel cache, or fill this
+		// page in the background, and let stats_state tell the client to poll.
+		reqCounts, requestCountsPending = h.pageRequestCounts(channel, pageIDs)
 		usage5h = make(map[int64]*database.AccountTimeRangeUsage)
 		usage7d = make(map[int64]*database.AccountTimeRangeUsage)
 	} else {
@@ -2063,11 +2096,15 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 	}
 
 	if pageSelection != nil {
+		statsState := pageSelection.StatsState
+		if requestCountsPending {
+			statsState = combineAccountStatsState(statsState, "stale")
+		}
 		c.JSON(http.StatusOK, accountsPageResponse{
 			Accounts: accounts,
 			Page:     pageSelection.Page, PageSize: pageSelection.PageSize, Total: pageSelection.Total,
 			Summary: pageSelection.Summary, Facets: pageSelection.Facets,
-			SnapshotAt: pageSelection.SnapshotAt.Format(time.RFC3339), StatsState: pageSelection.StatsState,
+			SnapshotAt: pageSelection.SnapshotAt.Format(time.RFC3339), StatsState: statsState,
 			DisabledSorts: pageSelection.DisabledSorts,
 		})
 		return
@@ -2104,7 +2141,7 @@ func (h *Handler) GetAccount(c *gin.Context) {
 		requestCounts = make(map[int64]*database.AccountRequestCount)
 	}
 	now := time.Now()
-	usage5h, usage7d, err := h.db.GetAccountUsageWindowsByIDs(ctx, []int64{id}, now.Add(-5*time.Hour), now.AddDate(0, 0, -7))
+	usage5h, usage7d, err := h.loadAccountUsageDetails(ctx, []int64{id}, now)
 	if err != nil {
 		log.Printf("获取账号 %d 用量统计失败: %v", id, err)
 		usage5h = make(map[int64]*database.AccountTimeRangeUsage)
@@ -3554,7 +3591,7 @@ func (h *Handler) getCachedRequestCounts() map[int64]*database.AccountRequestCou
 		log.Printf("获取账号请求统计失败: %v", err)
 		return make(map[int64]*database.AccountRequestCount)
 	}
-	h.storeRequestCountCache(cacheKey, counts, nil, time.Time{})
+	h.storeRequestCountCache(cacheKey, counts, nil, time.Time{}, false, nil)
 	return counts
 }
 
@@ -3567,6 +3604,9 @@ func (h *Handler) getAccountUsageWindows(ctx context.Context) (map[int64]*databa
 	if h.getRuntimeJSON(ctx, adminAccountWindowsNamespace, "global", &cached) && cached.Usage5h != nil && cached.Usage7d != nil {
 		return cached.Usage5h, cached.Usage7d
 	}
+	// The legacy full-list cache still uses one rolling 5h/7d window for every
+	// account. The paged page-stats and GetAccount paths (issue #798) align
+	// usage details to each account's official reset when one is available.
 	now := time.Now()
 	usage5h, usage7d, err := h.db.GetAccountUsageWindows(ctx, now.Add(-5*time.Hour), now.AddDate(0, 0, -7))
 	if err != nil {
@@ -3584,6 +3624,7 @@ type addAccountReq struct {
 	RefreshToken   string            `json:"refresh_token"`
 	SessionToken   string            `json:"session_token"`
 	ProxyURL       string            `json:"proxy_url"`
+	Timezone       string            `json:"timezone"`
 	CustomHeaders  map[string]string `json:"custom_headers"`
 	AllowDuplicate bool              `json:"allow_duplicate"`
 	// SkipRefresh 只入库、不换 AT、不打用量探测。大批量脚本导入时应打开，
@@ -3693,6 +3734,10 @@ func (h *Handler) AddAccount(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "代理URL无效")
 		return
 	}
+	if err := validateAccountTimezone(req.Timezone); err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	customHeaders, err := normalizeCustomHeaders(req.CustomHeaders)
 	if err != nil {
 		writeError(c, http.StatusBadRequest, err.Error())
@@ -3715,7 +3760,7 @@ func (h *Handler) AddAccount(c *gin.Context) {
 
 	var seeds []tokenCredentialSeed
 	for i := 0; i < total; i++ {
-		seed := tokenCredentialSeed{allowDuplicate: req.AllowDuplicate, customHeaders: customHeaders}
+		seed := tokenCredentialSeed{allowDuplicate: req.AllowDuplicate, customHeaders: customHeaders, newAccountTimezone: req.Timezone}
 		if len(refreshTokens) > 0 {
 			seed.refreshToken = refreshTokens[i]
 		}
@@ -3928,6 +3973,7 @@ type addATAccountReq struct {
 	Name           string            `json:"name"`
 	AccessToken    string            `json:"access_token"`
 	ProxyURL       string            `json:"proxy_url"`
+	Timezone       string            `json:"timezone"`
 	CustomHeaders  map[string]string `json:"custom_headers"`
 	AllowDuplicate bool              `json:"allow_duplicate"`
 	// GroupIDs 让添加时就把新账号绑进指定分组；重复跳过与命中已有身份被更新的账号不受影响。
@@ -3962,6 +4008,10 @@ func (h *Handler) AddATAccount(c *gin.Context) {
 
 	if err := security.ValidateProxyURL(req.ProxyURL); err != nil {
 		writeError(c, http.StatusBadRequest, "代理URL无效")
+		return
+	}
+	if err := validateAccountTimezone(req.Timezone); err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	customHeaders, err := normalizeCustomHeaders(req.CustomHeaders)
@@ -4039,9 +4089,10 @@ func (h *Handler) AddATAccount(c *gin.Context) {
 		}
 
 		seed := normalizeTokenCredentialSeed(tokenCredentialSeed{
-			accessToken:    at,
-			allowDuplicate: req.AllowDuplicate,
-			customHeaders:  customHeaders,
+			accessToken:        at,
+			newAccountTimezone: req.Timezone,
+			allowDuplicate:     req.AllowDuplicate,
+			customHeaders:      customHeaders,
 		})
 		// codex_at 不走 OAuth 身份去重：whoami 补出来的 email+工作区会撞上同工作区的
 		// OAuth 账号，把 PAT 合并进去等于用 PAT 覆盖它的 access_token。PAT 始终按 token 路由键去重。
@@ -4176,7 +4227,7 @@ func (h *Handler) streamAddATAccounts(c *gin.Context, req addATAccountReq, token
 			name = fmt.Sprintf("%s-%d", req.Name, i+1)
 		}
 
-		seed := normalizeTokenCredentialSeed(tokenCredentialSeed{accessToken: at, allowDuplicate: req.AllowDuplicate, customHeaders: req.CustomHeaders})
+		seed := normalizeTokenCredentialSeed(tokenCredentialSeed{accessToken: at, allowDuplicate: req.AllowDuplicate, customHeaders: req.CustomHeaders, newAccountTimezone: req.Timezone})
 		// 同 AddATAccount：codex_at 不进 OAuth 身份去重，见上方注释。
 		if seed.accessTokenType != accessTokenTypeCodexAT && seed.email != "" && effectiveWorkspaceIDFromSeed(seed) != "" {
 			id, updated, newAcc, err := h.upsertOAuthIdentityAccountDeferred(ctx, name, req.ProxyURL, seed, "manual_at", overwriteAccountProxy)
@@ -4912,6 +4963,7 @@ type importToken struct {
 // importSettings 汇总一次导入请求的表单开关。这些开关要穿过"入口 → 4 个格式
 // 解析函数 → importAccountsCommon"三层，继续用位置参数堆叠会越加越长。
 type importSettings struct {
+	timezone string
 	// defaultProxyURL 是表单里填的代理：文件没带代理、或没开 importProxies 时的兜底。
 	defaultProxyURL string
 	// importProxies 打开后采用文件内携带的代理，并把它们注册进代理池。
@@ -5531,8 +5583,14 @@ func (h *Handler) ImportAccounts(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	timezone := strings.TrimSpace(c.PostForm("timezone"))
+	if err := validateAccountTimezone(timezone); err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	settings := importSettings{
 		defaultProxyURL: c.PostForm("proxy_url"),
+		timezone:        timezone,
 		// TXT 系格式一行一个 token，物理上不可能携带代理。这里忽略开关而不是
 		// 报错，免得前端还要跟着格式切换清理该状态。
 		importProxies:  parseBoolForm(c.PostForm("import_proxy")) && (format == "json" || format == "json_at"),
@@ -6183,6 +6241,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, set
 			proxyURL := settings.proxyForToken(tok)
 
 			seed := importTokenSeed(tok, conflictingChatGPTIDs)
+			seed.newAccountTimezone = settings.timezone
 			seed.allowDuplicate = allowDuplicate
 			seed.customHeaders = cloneCustomHeaders(importCustomHeaders)
 			importSource := "import"
@@ -6470,7 +6529,7 @@ type batchUpdateAccountsReq struct {
 
 func (h *Handler) accountOperationIdentity(id int64) (string, string) {
 	h.accountListCacheMu.RLock()
-	for _, channel := range []string{database.UpstreamChannelCodex, database.UpstreamChannelGrok, database.UpstreamChannelAntigravity, database.UpstreamChannelClaude} {
+	for _, channel := range []string{database.UpstreamChannelCodex, database.UpstreamChannelGrok, database.UpstreamChannelAntigravity, database.UpstreamChannelClaude, database.UpstreamChannelKiro} {
 		snapshot := h.accountListCache[channel]
 		if snapshot == nil {
 			continue
@@ -9158,6 +9217,8 @@ var knownAPIKeyPlanFilters = map[string]struct{}{
 	// Antigravity keys derived from Google tier ids (g1-ultra-tier → ultra,
 	// standard-tier → standard); free/pro/api are shared with the lists above.
 	"ultra": {}, "standard": {},
+	// Kiro 账号按 auth.KiroPlanKey 从上游订阅标题归一后的标识匹配。
+	"kiro free": {}, "kiro pro": {}, "kiro pro+": {}, "kiro max": {}, "kiro power": {}, "kiro student": {},
 }
 
 // cleanPlanAllow 归一账号套餐白名单:小写去空白、丢弃未知值并去重。
@@ -13009,6 +13070,7 @@ func (h *Handler) ListModels(c *gin.Context) {
 	// Keep claudeChannelModels for pricing/history, where those entries remain
 	// useful to operators.
 	catalog.ClaudeModels = h.claudeAvailableChannelModels()
+	catalog.KiroModels = h.kiroChannelModels()
 	c.JSON(http.StatusOK, catalog)
 }
 
