@@ -46,6 +46,8 @@ import (
 
 // Handler 管理后台 API 处理器
 type Handler struct {
+	reauth                   scopedReauthStore
+	reauthExchange           scopedCodeExchange
 	intelligenceDeviceConfig *proxy.DeviceProfileConfig
 	intelligenceOnce         sync.Once
 	intelligenceWG           sync.WaitGroup
@@ -1135,6 +1137,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	keyUsage.GET("/me", h.GetPublicAPIKeyUsageSummary)
 	keyUsage.GET("/concurrency", h.GetPublicAPIKeyConcurrency)
 	keyUsage.GET("/accounts", h.GetPublicKeyUsageAccounts)
+	keyUsage.POST("/accounts/:id/reauth/start", h.startScopedReauth)
+	keyUsage.POST("/accounts/:id/reauth/complete", h.completeScopedReauth)
 	keyUsage.POST("/accounts/:id/reset-credits", h.ResetPublicKeyUsageAccountCredits)
 
 	// 账号自助添加公开门户（无 admin 鉴权；开关门控 + IP 限流；见 self_service.go）
@@ -1323,6 +1327,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/keys/reset-all-quotas", h.ResetAllAPIKeyQuotas)
 	api.PATCH("/keys/:id", h.UpdateAPIKey)
 	api.POST("/keys/:id/reset-quota", h.ResetAPIKeyQuota)
+	api.POST("/keys/:id/reset-weekly-quota", h.ResetAPIKeyWeeklyQuota)
 	api.GET("/keys/:id/scope-usage", h.GetAPIKeyScopeUsage)
 	api.GET("/keys/:id/model-request-usage", h.GetAPIKeyModelRequestUsage)
 	api.GET("/keys-scope-summary", h.GetAPIKeysScopeSummary)
@@ -1368,6 +1373,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/prompt-filter/request-conversations/:id/tasks", h.ListPromptRequestTasks)
 	api.GET("/prompt-filter/request-tasks/:id", h.GetPromptRequestTask)
 	api.PUT("/prompt-filter/requests/retention", h.UpdatePromptRequestRetention)
+	api.GET("/prompt-filter/requests/key-exclusions", h.GetPromptRequestKeyExclusions)
+	api.PUT("/prompt-filter/requests/key-exclusions", h.UpdatePromptRequestKeyExclusions)
 	api.GET("/prompt-filter/requests/:id", h.GetPromptRequest)
 	api.GET("/prompt-filter/requests/:id/images/:image", h.GetPromptRequestImage)
 	api.GET("/prompt-filter/logs/match", h.MatchPromptFilterLog)
