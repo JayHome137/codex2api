@@ -108,6 +108,7 @@ import type {
   PromptFilterLog,
   PromptFilterLogsResponse,
   PromptRequestConversationPage,
+  PromptRequestKeyRecording,
   PromptRequestDetail,
   PromptRequestRoundPage,
   PromptRequestPage,
@@ -351,7 +352,21 @@ export interface PublicKeyUsageAccount {
   usage_updated_at_5h?: string
   usage_updated_at_7d?: string
   reset_credits?: number
+  requests_5h?: number
+  requests_7d?: number
+  user_billed_5h?: number
+  user_billed_7d?: number
+  health_tier?: string
+  active_requests?: number
+  dynamic_concurrency_limit?: number
+  credits_valid?: boolean
+  credits_has_credits?: boolean
+  credits_unlimited?: boolean
+  credits_balance?: string | null
+  last_used_at?: string
+  created_at?: string
   reset_allowed: boolean
+  reauth_allowed?: boolean
 }
 
 async function requestAPIKeyUsage<T>(path: string, apiKey: string, options: RequestInit = {}): Promise<T> {
@@ -602,6 +617,8 @@ export const api = {
   setKeyUsageAccountPermissions: (id: number, data: { view_enabled: boolean; reset_enabled: boolean }) =>
     request<{ view_enabled: boolean; reset_enabled: boolean }>(`/key-usage-account-permissions/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   getPublicKeyUsageAccounts: (key: string, options: RequestInit = {}) => requestAPIKeyUsage<{ accounts: PublicKeyUsageAccount[]; groups: { id: number; name: string }[]; reset_enabled: boolean }>('/accounts', key, options),
+  startPublicAccountReauth: (key: string, id: number, signal?: AbortSignal) => requestAPIKeyUsage<{auth_url: string; session_id: string}>(`/accounts/${id}/reauth/start`, key, { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }),
+  completePublicAccountReauth: (key: string, id: number, data: { session_id: string; code: string; state: string }, signal?: AbortSignal) => requestAPIKeyUsage<{id: number; reload_pending?: boolean}>(`/accounts/${id}/reauth/complete`, key, { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }),
   resetPublicKeyUsageCredits: (key: string, id: number, requestID: string) => requestAPIKeyUsage<{ message: string; usage_refreshed: boolean }>(`/accounts/${id}/reset-credits`, key, { method: 'POST', headers: { 'Idempotency-Key': requestID } }),
   getBranding: () => requestPublic<SiteBranding>('/api/branding'),
   // 公开账号自助门户:生成 OpenAI 授权链接(无鉴权)。
@@ -1371,6 +1388,16 @@ export const api = {
     request<MessageResponse & { limits?: APIKeyLimits }>(`/keys/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   resetAPIKeyQuota: (id: number) =>
     request<MessageResponse>(`/keys/${id}/reset-quota`, { method: 'POST' }),
+  resetAPIKeyWeeklyQuota: (id: number, requestId: string) =>
+    request<MessageResponse & {
+      request_id: string
+      exempted_cost: number
+      reset_at: string
+      replayed: boolean
+    }>(`/keys/${id}/reset-weekly-quota`, {
+      method: 'POST',
+      body: JSON.stringify({ request_id: requestId }),
+    }),
   resetAllAPIKeyQuotas: () =>
     request<MessageResponse & { reset_count: number }>('/keys/reset-all-quotas', { method: 'POST' }),
   // 分组 / 账号维度限额的当前用量（issue #439）。
@@ -1486,14 +1513,21 @@ export const api = {
     request<PromptRequestConversationPage>(`/prompt-filter/request-conversations?before=${before}`, { signal }),
   listPromptRequestRounds: (id: number, before: number, signal?: AbortSignal) =>
     request<PromptRequestRoundPage>(`/prompt-filter/request-conversations/${id}?before=${before}`, { signal }),
-  listPromptRequestTasks: (id: number, before: number, signal?: AbortSignal) =>
-    request<PromptRequestTaskPage>(`/prompt-filter/request-conversations/${id}/tasks?before=${before}`, { signal }),
+  listPromptRequestTasks: (id: number, before: number, signal?: AbortSignal, live = false) =>
+    request<PromptRequestTaskPage>(`/prompt-filter/request-conversations/${id}/tasks?before=${before}${live ? '&live=1' : ''}`, { signal }),
   getPromptRequestTask: (id: number, signal?: AbortSignal) =>
     request<PromptRequestTaskDetail>(`/prompt-filter/request-tasks/${id}`, { signal }),
   updatePromptRequestRetention: (days: number) =>
     request<{ retention_days: number }>('/prompt-filter/requests/retention', {
       method: 'PUT',
       body: JSON.stringify({ retention_days: days }),
+    }),
+  getPromptRequestKeyExclusions: (signal?: AbortSignal) =>
+    request<{ keys: PromptRequestKeyRecording[] }>('/prompt-filter/requests/key-exclusions', { signal }),
+  updatePromptRequestKeyExclusions: (excludedKeyIDs: number[]) =>
+    request<{ keys: PromptRequestKeyRecording[] }>('/prompt-filter/requests/key-exclusions', {
+      method: 'PUT',
+      body: JSON.stringify({ excluded_key_ids: excludedKeyIDs }),
     }),
   getPromptRequest: (id: number, signal?: AbortSignal) =>
     request<PromptRequestDetail>(`/prompt-filter/requests/${id}`, { signal }),
