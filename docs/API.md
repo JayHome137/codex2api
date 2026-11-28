@@ -1512,7 +1512,11 @@ data: {"type":"diagnostics","codex_diagnostics":{"model":"gpt-5.5","http_status"
 
 #### POST /api/admin/accounts/import
 
-批量导入账号（支持 TXT/JSON/AT-TXT 三种格式）。
+批量导入账号（支持 TXT/JSON/AT-TXT 三种格式）。此普通 API 保留原有语义：单次请求内检查冲突，不关联独立请求；显式导入无歧义的 OAuth 身份仍可更新已有账号。
+
+管理页跨批导入 Codex JSON/JSON AT 时，使用独立的内部会话路由 `/api/admin/accounts/folder/import`。服务端收齐文件后，按现有凭据解析和有效工作区路由检查全部批次：同一邮箱和工作区对应不同凭据时，整组跳过，不覆盖已有账号；同身份同凭据只处理一次；无冲突记录照常导入。旧后端不支持该会话时，不回退到普通 API，因此不会先写入首批。
+
+管理页每批最多 100 个文件，多个文件合计最多 150 MiB；超过 150 MiB 的单个文件单独发送，仍受既有导入请求体上限约束。一次会话最多 100 批；同一服务实例最多同时暂存 4 个会话，共享 400 MiB 的暂存预算（含文件字节和解析记录的开销）。同一会话的请求须到达同一实例，并使用同一管理密钥；空闲 5 分钟或实例重启后须重新导入。暂存、预检及提交前取消不会写入账号或代理；提交按批写入，不是跨批事务，后续失败或取消不会回滚已提交批次。
 
 **请求:**
 
@@ -1812,6 +1816,66 @@ data: {"type":"complete","current":3,"total":3,"success":2,"failed":1}
 `api_domain` 只能是 `amazonaws`（`q.{region}.amazonaws.com`）或 `kiro`（`*.kiro.dev`）；`cache_simulation` 开启后，上游未给精确用量时按 `cache_control` 断点估算 cache 读写拆分。PUT 只更新出现的字段，保存后立即生效。
 
 Kiro 渠道的连通性测试默认模型、测活内容与并发在 `PUT /api/admin/settings/channel-tests` 的 `kiro` 字段里配置；账号列表、启停、删除、测连、质量测试、降智检测、分组与代理沿用通用账号接口，渠道参数为 `channel=kiro`。
+
+### OpenCode 渠道
+
+OpenCode 渠道支持 **OpenCode Go 订阅版**（`mode: "go"`，默认地址 `https://opencode.ai/zen/go/v1`，带 `rolling` / `weekly` / `monthly` 额度窗口）与 **OpenCode Zen 按量付费**（`mode: "zen"`，默认地址 `https://opencode.ai/zen/v1`）。同一个账号池同时服务 `/v1/chat/completions`、`/v1/responses`、`/v1/messages`（以及 `/v1/models`），按模型协议规则自动路由到对应原生端点或执行协议转换；对 Go 模式自动注入 `X-OpenCode-Session`，并使用 `User-Agent: opencode/<version>`（可通过环境变量 `OPENCODE_USER_AGENT_VERSION` 覆盖）以通过 Cloudflare WAF。
+
+#### POST /api/admin/accounts/opencode
+
+新增单个 OpenCode 账号。`api_key` 必填；`mode` 为 `go`（默认）或 `zen`。创建时可选自动同步模型目录与 Go 用量快照（`auto_sync: true`，默认开启）。
+
+```json
+{
+  "name": "OpenCode Go #1",
+  "email": "user@example.com",
+  "api_key": "sk-...",
+  "mode": "go",
+  "base_url": "https://opencode.ai/zen/go/v1",
+  "anthropic_base_url": "https://opencode.ai/zen/go",
+  "proxy_url": "http://127.0.0.1:7890",
+  "models": ["glm-5.3", "kimi-k2.5"],
+  "model_mapping": "claude-opus-4-6=minimax-m2.7",
+  "protocol_rules": [
+    { "pattern": "minimax-*", "protocol": "anthropic" },
+    { "pattern": "gpt-*", "protocol": "responses" }
+  ],
+  "custom_headers": { "X-Custom": "value" },
+  "auto_sync": true
+}
+```
+
+#### PUT /api/admin/accounts/:id/opencode
+
+更新指定 OpenCode 账号的名称、邮箱、API Key（留空不修改）、模式（`go`/`zen`）、Base URL、Anthropic Base URL、代理、模型白名单、模型映射、协议路由规则和自定义请求头。
+
+#### POST /api/admin/accounts/opencode/import
+
+批量导入 OpenCode 账号。自动识别以下格式，并在入库前按 API Key 指纹去重：
+
+- 纯文本逐行：`sk-...` 或 `名称,sk-...`
+- JSON 对象或数组（含 `api_key`、`mode`、`base_url` 等字段）
+- Sub2API 导出的 `opencode_go` 数据 JSON
+
+```json
+{
+  "content": "<文本或 JSON 字符串>",
+  "mode": "go",
+  "base_url": "可选",
+  "proxy_url": "可选",
+  "auto_sync": true
+}
+```
+
+#### GET /api/admin/accounts/opencode/export
+
+导出 OpenCode 账号（支持 `?ids=1,2` 指定 ID）。响应为 JSON 附件，含明文 API Key，带 `Content-Disposition: attachment` 与 `Cache-Control: no-store, max-age=0`，可原样导回。
+
+#### POST /api/admin/accounts/:id/opencode/sync 与 /accounts/opencode/sync
+
+同步单个或全部启用 OpenCode 账号的模型目录（`/models`）；Go 模式同时抓取 `/usage` 的 `rolling` / `weekly` / `monthly` 额度快照。后台同步任务每 5 分钟检查并按 5 分钟最小间隔 / 15 分钟保底间隔自动刷新活跃 Go 账号用量。
+
+OpenCode 渠道的连通性测试配置位于 `PUT /api/admin/settings/channel-tests` 的 `opencode` 字段；账号列表、启停、删除、测连、质量测试、降智检测、分组与代理沿用通用账号接口，渠道参数为 `channel=opencode`。
 
 ### 用量统计
 
@@ -2304,7 +2368,9 @@ Codex 维护请求默认与对话请求共用客户端身份解析和账号自�
 
 `max_retries`、`max_rate_limit_retries` 与 `codex_ws_silent_max_retries` 是原有的有限重试预算，管理界面和 API 范围均为 `0` 到 `10`（`0` 禁用对应预算）。需要持续重试时使用独立的 `continuous_retry_enabled` 开关；它不会改变这些有限预算的含义。开关打开后，可在 `continuous_retry_categories` 选择 `transport`、`http_429`、`http_4xx`、`http_5xx`、`stream_error`、`response_failed`、`context_error`，并用 `continuous_retry_status_codes`（例如 `[403,404,501]`）或 `continuous_retry_error_codes`（例如 `["rate_limited","context_length_exceeded"]`）精确追加匹配。类别、状态码、错误代码任一命中即可进入持续重试；403、404、上下文错误及“全部 `response.failed`”默认不选中（501 已由默认的 `http_5xx` 类别覆盖）。普通自选模式不会把结构化安全策略拒绝升级为无限重试。永久额度/余额错误（如 `insufficient_quota`、`quota_exceeded`、`billing_hard_limit`、`billing_limit_reached`、`spend_limit`、`credit_balance`、`insufficient_balance`、`usage_limited`）不会因为通用类别进入无限循环；只有管理员明确选择对应额度错误代码，或明确启用下述超级开关时，才会进入持续重试。
 
-`continuous_retry_catch_all` 是默认关闭的超级开关。请求同时提交 `continuous_retry_enabled=true` 与 `continuous_retry_catch_all=true` 后，除明确的上游 `cyber_policy` 外，所有被代理识别为真实上游失败的 HTTP 状态、传输/读取失败、`error` 帧、`response.failed` 以及以后出现的未知失败都会进入持续重试，不依赖当前已知错误码清单；永久额度、余额、鉴权、无效请求和其他结构化安全策略错误也包含在内。明确的上游 `cyber_policy` 始终终止当前请求，不换号、不重放。文本推理请求只把上游 HTTP `200` 及协议正常终态视为可提交结果；201、202、204、重定向、`response.failed`、独立 `error` 帧及无终态 EOF 都会丢弃整次尝试并继续重试。无状态请求会轮换可用账号；持有账号绑定加密状态的请求只有在能够安全展开为自包含请求时才换号，否则沿用相应协议的绑定语义。`continuous_retry_enabled=false` 会规范化为 `continuous_retry_catch_all=false`。
+`continuous_retry_catch_all` 是默认关闭的超级开关。请求同时提交 `continuous_retry_enabled=true` 与 `continuous_retry_catch_all=true` 后，除明确的上游 `cyber_policy` 和已识别的无效输入图片终态外，所有被代理识别为真实上游失败的 HTTP 状态、传输/读取失败、`error` 帧、`response.failed` 以及以后出现的未知失败都会进入持续重试，不依赖当前已知错误码清单；永久额度、余额、鉴权、无效请求和其他结构化安全策略错误也包含在内。明确的上游 `cyber_policy` 始终终止当前请求，不换号、不重放。文本推理请求只把上游 HTTP `200` 及协议正常终态视为可提交结果；201、202、204、重定向、`response.failed`、独立 `error` 帧及无终态 EOF 都会丢弃整次尝试并继续重试。无状态请求会轮换可用账号；持有账号绑定加密状态的请求只有在能够安全展开为自包含请求时才换号，否则沿用相应协议的绑定语义。`continuous_retry_enabled=false` 会规范化为 `continuous_retry_catch_all=false`。
+
+无效输入图片终态：结构化 `invalid_request_error`、`invalid_value`、`param=input` 及明确的 `The image data you provided does not represent a valid image.` 消息同时匹配时，优先于400状态码、错误码和超级模式选择器，立即返回错误，不轮换账号。其他400及其他 `invalid_value` 不受该规则影响。
 
 开启持续重试后，流式上游尝试会先完整暂存，只有正常终态才一次性回放给客户端。因此失败尝试的半截文本、工具调用和错误帧不会泄漏，但客户端也不再实时逐 token 收到该次结果。SSE 路径在退避、等待账号、等待响应头和读取暂存流时写注释心跳并 flush；Responses WebSocket 使用 Ping。非流式 JSON（包括 Grok 图片/视频创建，但不包括 Codex/GPT Images）在已进入无限重试后，会在退避、等待账号、等待响应头和读取响应体时发送标准 HTTP `102 Processing` 信息响应；它不会提交最终 JSON 的状态码或响应体，但中间代理可能丢弃 1xx，因此仍需依赖墙钟上限和客户端超时。Codex/GPT Images 的非流式生成与编辑即使进入无限重试，也只等待最终 JSON，不发送 102；其重试截止时间和取消行为保持不变。`retry_interval_ms` 是本地等待下限；实际等待取该值、带抖动的指数退避（250ms 起步、30 秒封顶）和有效 `Retry-After`（最多 5 分钟）中的较大值。
 
@@ -2951,6 +3017,8 @@ curl -X DELETE http://localhost:8080/api/admin/images/jobs/1 \
 - `POST /api/key-usage/accounts/:id/reauth/complete`：用同一 Key 向同一账号提交 `session_id`、回调里的 `code` 和 `state`。只允许重新授权原来的上游用户和工作区，不支持换绑、导入新账号或传入代理。若成功响应中有 `reload_pending: true`，说明凭据已保存但运行池未能重新加载；请刷新账号列表，不要再次提交同一回调。自助页不提供分组、调度、代理等管理设置写入接口。
 
 按 Key 和账号统计的请求数、Token 和费用不受审计日志模式限制。升级前被审计过滤掉的请求没有可回填的明细；跨越升级时间的窗口可能偏低，直到所有写入节点升级并经过相应窗口。
+
+自助账号卡片只读展示订阅业务状态及续费/到期日期，不触发后台订阅刷新。`updated_at` 是账号记录更新时间，与各用量窗口的采样时间不同；`using_credits` 表示当前正在使用积分，而不是仅有余额。适用的账号还可返回 Spark 用量和重置时间；未知用量不等于零。限流原因使用公开枚举，恢复时间未知时省略，不返回原始上游错误。点击重置卡余量徽标只打开详情；实际消耗须在详情的重置卡区域点击「使用重置卡」并再次确认。
 
 自助账号列表的 5h/长窗口是账号运行态缓存，可能滞后；未知值为 `null`，不是 0。`long_window_seconds` 给出长窗口的实际上游周期（未知为 0）；部分套餐可能是月窗口，而非 7 天。API Key 的金额与请求预算和上游账号用量是不同的额度。空的 API Key 分组限制表示不限分组；公开账号信息之前，管理员应检查 Key 的授权范围。
 

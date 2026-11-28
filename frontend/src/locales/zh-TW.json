@@ -1,5 +1,6 @@
 {
   "status": {
+    "forbidden": "禁止存取",
     "unavailable": "暫不可用"
   },
   "keyUsage": {
@@ -9,6 +10,7 @@
     }
   },
   "keyUsageAccounts": {
+    "usageSampled": "用量取樣時間",
     "reauthReloadPending": "授權已儲存，但帳號尚未重新載入。請重新整理帳號清單，不要重複提交回呼。",
     "reauthorize": "重新授權",
     "keyRequests": "此 Key 請求數",
@@ -331,6 +333,8 @@
   "common": {
     "frontendBuildVersion": "前端建置：{{version}}",
     "versionMismatch": "前端資源與服務版本不一致，建議重新建置前端後再編譯程式。",
+    "versionCustomBuild": "自訂建置",
+    "versionCustomBuildHint": "目前建置無法與上游發佈版本比較，尚未判定需要更新。請透過原建置部署流程升級，以保留自訂功能。",
     "success": "成功",
     "autoRefresh": "自動重新整理",
     "autoRefreshOff": "關閉自動重新整理",
@@ -408,6 +412,7 @@
       "upstreamChannelAntigravity": "Antigravity",
       "upstreamChannelClaude": "Claude",
       "upstreamChannelKiro": "Kiro",
+      "upstreamChannelOpenCode": "OpenCode",
       "upstreamChannelAutoTab": "自動",
       "upstreamChannelHint": {
         "auto": "不限渠道：請求依模型路由到 Codex、Grok、Antigravity、Claude 或 Kiro 帳號。",
@@ -448,6 +453,7 @@
     "operationUsageRefreshResultsTitle": "用量更新結果",
     "lastTokenRefresh": "最近 Token 續期",
     "tokenRefreshNotice": "授權續期提示",
+    "nextTokenRefreshRetry": "下次自動重試",
     "todayStats": "今日統計",
     "todayStatsHint": "今日(0 點起)經由本閘道的請求數、Token 與成本",
     "largePoolSortDisabled": "後台正在聚合查詢中，請稍後再試",
@@ -604,6 +610,7 @@
     },
     "providerViewClaude": "Claude",
     "providerViewKiro": "Kiro",
+    "providerViewOpenCode": "OpenCode",
     "testProxySuccess": "代理可用",
     "testProxyFailed": "代理測試失敗",
     "proxyPoolEmpty": "代理池為空(可在「代理」頁新增)",
@@ -688,6 +695,9 @@
     "autoResetCreditsOnExhaustionDesc": "每 5 分鐘檢查官方 Codex 帳號（含 Business Pro Lite）。僅當上游確認 7d 長窗口（team 等為 30 天月窗）達到 100%，且有可用重置次數時消耗一次，無需等待券臨期；5h 窗口用盡不會觸發。預設關閉；開啟後立即檢查。",
     "codexOAuthKeepalive": "惰性模式下保持 Codex 授權",
     "codexOAuthKeepaliveDesc": "開啟後，惰性模式仍會為即將到期的 Codex Token 續期，包括額度冷卻中的帳號；不會解除冷卻或發送生成請求。預設關閉。",
+    "claudeOAuthKeepalive": "惰性模式下保持 Claude 授權",
+    "claudeOAuthKeepaliveDesc": "開啟後，惰性模式仍會為具有效 RT 且臨期（到期前 30 分鐘內）的 Claude OAuth 帳號自動續期，包括額度冷卻中的帳號；跳過 API Key、Setup Token、人工停用和已失效帳號，不會解除冷卻或發送探測請求。預設關閉。",
+    "quietHoursKeepaliveNotice": "目前已設定背景靜默時段：靜默時段優先級高於 OAuth 保活，靜默期間會暫停 Codex/Claude 背景續期；若靜默時長涵蓋 Claude AT 有效期，AT 將在靜默結束後或首次請求時按需續期。",
     "codexTelemetry": "用戶端遙測（實驗性）",
     "codexTelemetryDesc": "使用所選用戶端身分傳送模擬的 Codex 分析事件與 OTLP 指標。事件為合成，並非來自真實工具呼叫。預設關閉；可用 CODEX_TELEMETRY_ENABLED=false 在部署層強制關閉。",
     "codexTelemetryTiming": "遙測計時探針（臨時）",
@@ -846,10 +856,13 @@
     "claudeMaxToolSchemaBytesDesc": "0 表示不設閘道 Schema 上限；請求體仍受系統大小與上游限制。",
     "nav": {
       "kiro": "Kiro",
-      "kiroDesc": "Kiro 上游網域、本地用量模擬與連通性測試"
+      "kiroDesc": "Kiro 上游網域、本地用量模擬與連通性測試",
+      "opencode": "OpenCode",
+      "opencodeDesc": "OpenCode Go / Zen 渠道連通性測試與預設探測參數"
     },
     "channelTest": {
-      "kiroDesc": "Kiro 帳號頁「測試連線」與批次測試預設使用的探測模型與測活內容。模型留空時依帳號目錄自動選擇（優先 haiku）。"
+      "kiroDesc": "Kiro 帳號頁「測試連線」與批次測試預設使用的探測模型與測活內容。模型留空時依帳號目錄自動選擇（優先 haiku）。",
+      "opencodeDesc": "OpenCode 帳號頁「測試連線」與批次測試預設使用的探測模型與測活內容。模型留空時依帳號目錄自動選擇。"
     },
     "kiro": {
       "title": "Kiro 渠道",

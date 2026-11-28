@@ -334,6 +334,8 @@ export default function AccountDetailSheet({
               <ChannelLogo channel="claude" size={22} />
             ) : account.kiro_api ? (
               <ChannelLogo channel="kiro" size={22} />
+            ) : account.opencode_api ? (
+              <ChannelLogo channel="opencode" size={22} />
             ) : account.antigravity_api ? (
               <ChannelLogo channel="antigravity" size={22} />
             ) : account.grok_api ? (
@@ -673,9 +675,11 @@ export default function AccountDetailSheet({
                     {formatBeijingTime(account.created_at)}
                   </span>
                 </MetricCard>
-                {account.codex_last_refresh_at ? (
+                {(account.codex_last_refresh_at || account.claude_last_refresh_at) ? (
                   <MetricCard label={t("accounts.lastTokenRefresh")}>
-                    <span className="text-[12px]">{formatBeijingTime(account.codex_last_refresh_at)}</span>
+                    <span className="text-[12px]">
+                      {formatBeijingTime(account.codex_last_refresh_at || account.claude_last_refresh_at!)}
+                    </span>
                   </MetricCard>
                 ) : null}
                 <MetricCard label={t("accounts.updatedAt")}>
@@ -692,11 +696,21 @@ export default function AccountDetailSheet({
               </div>
             </Section>
 
-            {account.codex_refresh_error ? (
+            {(account.codex_refresh_error || account.claude_refresh_error || account.claude_refresh_next_retry_at) ? (
               <Section title={t("accounts.tokenRefreshNotice")}>
-                <p className="break-words rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
-                  {account.codex_refresh_error}
-                </p>
+                <div className="space-y-1.5 rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
+                  {(account.codex_refresh_error || account.claude_refresh_error) ? (
+                    <p className="break-words">
+                      {account.codex_refresh_error || account.claude_refresh_error}
+                    </p>
+                  ) : null}
+                  {account.claude_refresh_next_retry_at ? (
+                    <p className="text-[11px] opacity-85">
+                      {t("accounts.nextTokenRefreshRetry")}:{" "}
+                      {formatBeijingTime(account.claude_refresh_next_retry_at)}
+                    </p>
+                  ) : null}
+                </div>
               </Section>
             ) : null}
 

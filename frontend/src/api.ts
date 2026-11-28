@@ -1,6 +1,7 @@
 import { intelligenceQuery, type IntelligenceSettings, type IntelligenceAccount, type IntelligenceRun, type IntelligenceBar, type IntelligencePage } from './lib/intelligenceCheck.ts'
 import { qualityTestFilterQuery, type QualityTestJob, type QualityTestJobsFilter, type QualityTestJobsResponse, type QualityTestPrompt } from './lib/qualityTest.ts'
 import type {
+  SubscriptionStatus,
   AccountEventTrendPoint,
   AccountPortalAuthURLResponse,
   AccountPortalSubmitResponse,
@@ -70,6 +71,10 @@ import type {
   FetchOpenAIResponsesModelsResponse,
   CreateImageJobPayload,
   HealthResponse,
+  OpenCodeImportResponse,
+  OpenCodeMode,
+  OpenCodeProtocolRule,
+  OpenCodeUsageSnapshot,
   ImageAssetsResponse,
   ImagePromptTemplate,
   ImageJobResponse,
@@ -338,6 +343,14 @@ async function requestAccountPortal<T>(path: string, options: RequestInit = {}):
 }
 
 export interface PublicKeyUsageAccount {
+  updated_at?: string
+  using_credits?: boolean
+  limit_reason?: 'window_5h' | 'window_7d' | 'quota_paused' | 'quota_paused_5h' | 'quota_paused_7d' | 'rate_limited' | 'cooldown'
+  recovery_at?: string
+  subscription?: Pick<SubscriptionStatus, 'business_status' | 'plan' | 'expires_at' | 'days_remaining' | 'days_overdue' | 'auto_renew' | 'grace_until' | 'last_checked_at' | 'sync_state' | 'renewal_detected_at' | 'last_known_status' | 'timezone'>
+  usage_percent_spark?: number | null
+  usage_updated_at_spark?: string
+  reset_spark_at?: string
   id: number
   name: string
   email: string
@@ -969,6 +982,78 @@ export const api = {
       method: 'POST',
       timeoutMs: 180_000,
     }),
+  addOpenCodeAccount: (data: {
+    name?: string
+    email?: string
+    api_key: string
+    mode?: OpenCodeMode
+    base_url?: string
+    anthropic_base_url?: string
+    proxy_url?: string
+    models?: string[]
+    model_mapping?: string
+    protocol_rules?: OpenCodeProtocolRule[]
+    custom_headers?: Record<string, string>
+    auto_sync?: boolean
+  }) =>
+    request<{ id: number; name: string; mode: string; models: number; warnings?: string[] }>('/accounts/opencode', {
+      method: 'POST',
+      body: JSON.stringify(data),
+      timeoutMs: 60_000,
+    }),
+  updateOpenCodeAccount: (
+    id: number,
+    data: {
+      name?: string
+      email?: string
+      api_key?: string
+      mode?: OpenCodeMode
+      base_url?: string
+      anthropic_base_url?: string
+      proxy_url?: string
+      models?: string[]
+      model_mapping?: string
+      protocol_rules?: OpenCodeProtocolRule[]
+      clear_protocol_rules?: boolean
+      custom_headers?: Record<string, string>
+    },
+  ) =>
+    request<{ id: number; updated: boolean }>(`/accounts/${id}/opencode`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+      timeoutMs: 30_000,
+    }),
+  importOpenCodeAccounts: (data: {
+    content: string | unknown
+    mode?: OpenCodeMode
+    base_url?: string
+    anthropic_base_url?: string
+    proxy_url?: string
+    auto_sync?: boolean
+  }) =>
+    request<OpenCodeImportResponse>('/accounts/opencode/import', {
+      method: 'POST',
+      body: JSON.stringify(data),
+      timeoutMs: 180_000,
+    }),
+  exportOpenCodeAccounts: (ids?: number[]) => {
+    const params = new URLSearchParams()
+    if (ids && ids.length > 0) params.set('ids', ids.join(','))
+    const qs = params.toString()
+    return requestNamedBlob(`/accounts/opencode/export${qs ? `?${qs}` : ''}`)
+  },
+  syncOpenCodeAccount: (id: number) =>
+    request<{ id: number; mode: string; models: string[]; usage?: OpenCodeUsageSnapshot; warnings?: string[] }>(
+      `/accounts/${id}/opencode/sync`,
+      { method: 'POST', timeoutMs: 60_000 },
+    ),
+  syncAllOpenCodeAccounts: () =>
+    request<{
+      total: number
+      succeeded: number
+      failed: number
+      results: Array<{ id: number; name: string; success: boolean; models?: number; error?: string; warnings?: string[] }>
+    }>('/accounts/opencode/sync', { method: 'POST', timeoutMs: 180_000 }),
   getKiroSettings: () => request<KiroSettings>('/settings/kiro'),
   updateKiroSettings: (patch: Partial<KiroSettings>) =>
     request<KiroSettings>('/settings/kiro', {
@@ -1183,7 +1268,7 @@ export const api = {
       body: JSON.stringify({ account_ids: ids }),
     }),
   getChannelTestSettings: () => request<ChannelTestSettingsResponse>('/settings/channel-tests'),
-  updateChannelTestSettings: (patch: Partial<Record<'antigravity' | 'claude' | 'kiro', Partial<ChannelTestSettings>>>) =>
+  updateChannelTestSettings: (patch: Partial<Record<'antigravity' | 'claude' | 'kiro' | 'opencode', Partial<ChannelTestSettings>>>) =>
     request<ChannelTestSettingsResponse>('/settings/channel-tests', {
       method: 'PUT',
       body: JSON.stringify(patch),

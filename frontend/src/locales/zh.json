@@ -210,6 +210,13 @@
     "theme": "主题设置",
     "settings": "系统设置",
     "console": "控制台",
+    "group": {
+      "overview": "总览与观测",
+      "assets": "资产与分发",
+      "tools": "测试与治理",
+      "system": "系统"
+    },
+    "quickSearch": "快速搜索…",
     "proxies": "代理管理",
     "images": "生图工作台",
     "promptFilter": "Prompt 检查",
@@ -739,6 +746,8 @@
     "versionMismatch": "前端资源与服务版本不一致，建议重新构建前端后再编译程序。",
     "latestVersion": "最新版本：{{version}}",
     "versionLatest": "已是最新版本",
+    "versionCustomBuild": "自定义构建",
+    "versionCustomBuildHint": "当前构建无法与上游发布版本比较，未判定需要更新。请通过原构建部署流程升级，以保留定制功能。",
     "versionChecking": "正在检查最新版本…",
     "viewReleaseNotes": "查看更新内容",
     "updateNow": "立即更新",
@@ -773,6 +782,7 @@
     "switchToLight": "切换为浅色模式",
     "themeStyle": "主题风格",
     "theme": {
+      "studio": "Beautiful Studio",
       "default": "经典蓝",
       "glass": "霜玻璃",
       "claude": "Claude 暖杏",
@@ -1412,8 +1422,11 @@
     "addFailed": "添加失败：{{error}}",
     "importFailed": "导入失败",
     "importFailedWithReason": "导入失败：{{error}}",
+    "importPartialFailed": "导入中途失败（前 {{completed}} 批已提交，剩余未完成）",
+    "importPartialFailedWithReason": "导入中途失败（前 {{completed}} 批已提交，剩余未完成）：{{error}}",
     "importCompleted": "导入完成",
     "importFileTooLarge": "文件 {{name}} 过大，超过导入上限 {{max}}，请拆分后再导入",
+    "importTooManyBatches": "所选 JSON 文件共需 {{count}} 批，超过单次导入上限（{{max}} 批），请减少文件数量后分次导入",
     "deleteTitle": "删除账号",
     "deleteDesc": "账号 {{account}} 将移入回收站，可随时在回收站中恢复或彻底删除。",
     "deleteConfirm": "确认删除",
@@ -1914,6 +1927,7 @@
     "refreshAccessToken": "刷新 AT",
     "lastTokenRefresh": "最近 Token 续期",
     "tokenRefreshNotice": "授权续期提示",
+    "nextTokenRefreshRetry": "下次自动重试",
     "addMethodTab": "添加方式",
     "addMethodRT": "Refresh Token",
     "addMethodSessionToken": "Session Token",
@@ -2249,6 +2263,7 @@
     "allModelCooldownsCleared": "已清除 {{count}} 条模型冷却",
     "providerViewClaude": "Claude",
     "providerViewKiro": "Kiro",
+    "providerViewOpenCode": "OpenCode",
     "testProxySuccess": "代理可用",
     "testProxyFailed": "代理测试失败",
     "proxyPoolEmpty": "代理池为空(可在「代理」页添加)",
@@ -2378,6 +2393,7 @@
     }
   },
   "status": {
+    "forbidden": "禁止访问",
     "active": "可用",
     "ready": "就绪",
     "cooldown": "冷却中",
@@ -4593,6 +4609,10 @@
       "glass": {
         "surface": "霜化玻璃",
         "controls": "胶囊高光"
+      },
+      "studio": {
+        "surface": "细腻多层投影",
+        "controls": "暗色微高光边"
       }
     },
     "title": "主题设置",
@@ -4631,6 +4651,7 @@
       "website": "经典网站"
     },
     "themeDesc": {
+      "studio": "借鉴 Beautiful UI 的 OKLCH 精密中性灰阶：浅色通透柔影，深色配 1px 微高光细环，克制而高级。",
       "default": "稳重的蓝色主色，适合通用后台和默认部署。",
       "glass": "取自明暗开关的乳白玻璃与内凹高光：半透明卡片、胶囊控件，浅色用琥珀点缀，深色转成夜空银辉。",
       "claude": "暖色纸张质感，弱化冷色并保留清晰层级。",
@@ -4791,8 +4812,10 @@
       "trafficDesc": "限流重试、模型 429 冷却与调度策略",
       "grok": "Grok",
       "kiro": "Kiro",
+      "opencode": "OpenCode",
       "grokDesc": "Grok 会话粘性、探测、限流重试与 OAuth client_id",
       "kiroDesc": "Kiro 上游域名、本地用量模拟与连通性测试",
+      "opencodeDesc": "OpenCode Go / Zen 渠道连通性测试与默认探测参数",
       "antigravity": "Antigravity",
       "antigravityDesc": "Google 登录使用的 OAuth client 凭据",
       "runtime": "运行时",
@@ -5064,6 +5087,7 @@
       "antigravityDesc": "Antigravity 账号页“测试连接”与批量测试默认使用的探测模型和测活内容。模型留空时按账号目录自动选择（优先版本最新的 flash 低档）。",
       "claudeDesc": "Claude 账号页“测试连接”与批量测试默认使用的探测模型和测活内容。模型留空时按账号目录自动选择（优先 haiku）。",
       "kiroDesc": "Kiro 账号页“测试连接”与批量测试默认使用的探测模型和测活内容。模型留空时按账号目录自动选择（优先 haiku）。",
+      "opencodeDesc": "OpenCode 账号页“测试连接”与批量测试默认使用的探测模型和测活内容。模型留空时按账号目录自动选择。",
       "autoModel": "自动选择",
       "modelHint": "只有在该账号模型目录里的模型才会生效，否则退回自动选择；弹窗里仍可临时切换。",
       "contentHint": "留空沿用全局测活内容。多行时每次随机抽取一行；支持 {{time}}、{{date}}、{{rand}}、{{rand:1-100}} 等变量。",
@@ -5157,8 +5181,8 @@
     "continuousRetryMaxDuration": "最长重试时间（秒）",
     "continuousRetryMaxDurationDesc": "从请求首次进入无限重试时开始计时，后续尝试不会重置，范围 1-900 秒。",
     "continuousRetryCatchAll": "重试符合条件的上游错误（超级模式）",
-    "continuousRetryCatchAllDesc": "一键覆盖下方选择器，不依赖错误码穷举。除客户端取消、本地失败、明确的上游 cyber_policy 安全终态或重试期限到达外，任何 HTTP、传输、流内及未知上游失败都会被吞掉并重试，直到收到协议成功终态。",
-    "continuousRetryCatchAllWarning": "高风险，默认关闭：无效请求、403/404、鉴权失败、上下文超限、额度或余额耗尽、非 CYB 安全策略拒绝及未知错误都会反复提交。明确的上游 cyber_policy 始终停止，并保留 signed decision、配置的会话锁和用户冷却。其他重试可能持续消耗 input/output token、请求次数、余额、账号配额、暂存内存与磁盘，长期占用并发槽位并阻塞较新的请求；图片或视频还可能重复生成和重复扣费。仅在接受这些成本时开启。",
+    "continuousRetryCatchAllDesc": "一键覆盖下方选择器，不依赖错误码穷举。除客户端取消、本地失败、明确的上游 cyber_policy 安全终态、已识别的无效输入图片或重试期限到达外，任何 HTTP、传输、流内及未知上游失败都会被吞掉并重试，直到收到协议成功终态。",
+    "continuousRetryCatchAllWarning": "高风险，默认关闭：除已识别的无效输入图片外，无效请求、403/404、鉴权失败、上下文超限、额度或余额耗尽、非 CYB 安全策略拒绝及未知错误都会反复提交。明确的上游 cyber_policy 始终停止，并保留 signed decision、配置的会话锁和用户冷却。其他重试可能持续消耗 input/output token、请求次数、余额、账号配额、暂存内存与磁盘，长期占用并发槽位并阻塞较新的请求；图片或视频还可能重复生成和重复扣费。仅在接受这些成本时开启。",
     "continuousRetryCategoryTransport": "传输断开 / 超时 / EOF / WS 断开",
     "continuousRetryCategory429": "HTTP 429 / rate limited",
     "continuousRetryCategory4xx": "全部 HTTP 4xx",
@@ -5170,7 +5194,7 @@
     "continuousRetryStatusCodesDesc": "逗号分隔的 100~599 状态码；选中的状态码会覆盖有限重试预算，例如 403、404、501。",
     "continuousRetryErrorCodes": "精确上游错误代码",
     "continuousRetryErrorCodesDesc": "逗号分隔，例如 rate_limited、context_length_exceeded、server_error。",
-    "continuousRetryWarning": "普通模式只重试下方选中的错误；超级模式重试所有真实上游失败。客户端断开、本地校验/输出策略失败、暂存失败或下游写失败会立即停止，绝不会当作上游错误继续轮换。",
+    "continuousRetryWarning": "普通模式只重试下方选中的错误；超级模式重试符合条件的真实上游失败。已识别的无效输入图片始终停止；客户端断开、本地校验/输出策略失败、暂存失败或下游写失败也不会当作上游错误继续轮换。",
     "testModelLabel": "测试连接模型",
     "testModelHint": "账号测试连接时使用的模型",
     "testContent": "测活内容",
@@ -5188,9 +5212,12 @@
     "recoveryProbeInterval": "恢复探测最小间隔",
     "recoveryProbeIntervalDesc": "被封禁账号两次恢复探测之间的最短间隔，单位分钟（1~10080）。",
     "lazyMode": "惰性模式",
-    "lazyModeDesc": "开启后不主动刷新账号，也不会发送真实 responses 探针；RT 账号仅在被调度时刷新 AT，用量只保留零成本 wham 采样和真实请求回流。",
+    "lazyModeDesc": "开启后默认暂停各渠道后台主动刷新（Codex / Claude / Grok / Antigravity / Kiro），也不发送真实 responses 探针与恢复探测；各渠道仅在请求调度时按需刷新 AT，用量只保留零成本 wham 采样和真实请求回流。可单独开启下方 Codex 或 Claude 授权保活。",
     "codexOAuthKeepalive": "惰性模式下保持 Codex 授权",
     "codexOAuthKeepaliveDesc": "开启后，惰性模式仍会为即将到期的 Codex Token 续期，包括额度冷却中的账号；不会解除冷却或发送生成请求。默认关闭。",
+    "claudeOAuthKeepalive": "惰性模式下保持 Claude 授权",
+    "claudeOAuthKeepaliveDesc": "开启后，惰性模式仍会为带有效 RT 且临期（到期前 30 分钟内）的 Claude OAuth 账号自动续期，包括额度冷却中的账号；跳过 API Key、Setup Token、人工停用和已失效账号，不会解除冷却或发送探测请求。默认关闭。",
+    "quietHoursKeepaliveNotice": "当前已配置后台静默时段：静默时段优先级高于 OAuth 保活，静默期间会暂停 Codex/Claude 后台续期；若静默时长覆盖 Claude AT 有效期，AT 将在静默结束后或首次请求时按需续期。",
     "inviteGuide": "导入后邀请引导",
     "inviteGuideDesc": "导入账号后自动探测各账号的推荐邀请资格，并弹出如何最大化获取邀请额度的方案。账号较多时只抽检前 50 个。",
     "runtimeOptimization": "运行时优化",
@@ -6186,6 +6213,7 @@
       "upstreamChannelAntigravity": "Antigravity",
       "upstreamChannelClaude": "Claude",
       "upstreamChannelKiro": "Kiro",
+      "upstreamChannelOpenCode": "OpenCode",
       "upstreamChannelHint": {
         "auto": "不限渠道：请求按模型路由到 Codex、Grok、Antigravity、Claude 或 Kiro 账号。",
         "codex": "该 Key 只调度 Codex 账号，不会使用 Grok、Antigravity、Claude 或 Kiro 账号。",
@@ -6309,6 +6337,7 @@
     "keyGroupsReconcileHint": "分组卡片会重复计入多分组账号；加上 {{ungrouped}} 个未分组账号，再减去 {{multi}} 个多分组账号的重复归属后，即为 Key 去重总计。"
   },
   "keyUsageAccounts": {
+    "usageSampled": "用量采样时间",
     "reauthReloadPending": "授权已保存，但账号尚未重新加载。请刷新账号列表，不要重复提交回调。",
     "reauthorize": "重新授权",
     "keyRequests": "此 Key 请求数",

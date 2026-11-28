@@ -210,6 +210,13 @@
     "theme": "Themes",
     "settings": "Settings",
     "console": "Console",
+    "group": {
+      "overview": "Overview",
+      "assets": "Assets & Routing",
+      "tools": "Testing & Governance",
+      "system": "System"
+    },
+    "quickSearch": "Quick search…",
     "proxies": "Proxies",
     "images": "Images",
     "promptFilter": "Prompt Filter",
@@ -739,6 +746,8 @@
     "versionMismatch": "The frontend and service versions differ. Rebuild the frontend before compiling the program again.",
     "latestVersion": "Latest version: {{version}}",
     "versionLatest": "You are on the latest version",
+    "versionCustomBuild": "Custom build",
+    "versionCustomBuildHint": "This build cannot be compared with upstream releases; no update requirement has been determined. Upgrade through your original build and deployment process to preserve custom changes.",
     "versionChecking": "Checking for the latest version…",
     "viewReleaseNotes": "View release notes",
     "updateNow": "Update now",
@@ -773,6 +782,7 @@
     "switchToLight": "Switch to light mode",
     "themeStyle": "Theme Style",
     "theme": {
+      "studio": "Beautiful Studio",
       "default": "Classic Blue",
       "glass": "Frosted Glass",
       "claude": "Claude Warm",
@@ -996,6 +1006,7 @@
     "operationUsageRefreshResultsTitle": "Usage refresh results",
     "lastTokenRefresh": "Last token refresh",
     "tokenRefreshNotice": "Token refresh notice",
+    "nextTokenRefreshRetry": "Next auto retry",
     "title": "Accounts",
     "description": "Manage Codex proxy accounts (Refresh Tokens)",
     "loadingTitle": "Loading Accounts",
@@ -1414,8 +1425,11 @@
     "addFailed": "Failed to add account: {{error}}",
     "importFailed": "Import failed",
     "importFailedWithReason": "Import failed: {{error}}",
+    "importPartialFailed": "Import failed partway through ({{completed}} batch(es) already committed; remaining batches were not completed)",
+    "importPartialFailedWithReason": "Import failed partway through ({{completed}} batch(es) already committed; remaining batches were not completed): {{error}}",
     "importCompleted": "Import completed",
     "importFileTooLarge": "File {{name}} is too large (exceeds the {{max}} import limit); please split it before importing",
+    "importTooManyBatches": "Selected JSON files require {{count}} batches, exceeding the {{max}}-batch limit; please reduce the selection and import in smaller groups",
     "deleteTitle": "Delete Account",
     "deleteDesc": "Account {{account}} will be moved to the recycle bin. You can restore it or delete it permanently there.",
     "deleteConfirm": "Confirm Delete",
@@ -2249,6 +2263,7 @@
     "allModelCooldownsCleared": "Cleared {{count}} model cooldowns",
     "providerViewClaude": "Claude",
     "providerViewKiro": "Kiro",
+    "providerViewOpenCode": "OpenCode",
     "testProxySuccess": "Proxy OK",
     "testProxyFailed": "Proxy test failed",
     "proxyPoolEmpty": "Proxy pool is empty (add proxies on the Proxies page)",
@@ -2378,6 +2393,7 @@
     }
   },
   "status": {
+    "forbidden": "Forbidden",
     "active": "Available",
     "ready": "Ready",
     "cooldown": "Cooling Down",
@@ -4597,6 +4613,10 @@
       "glass": {
         "surface": "Frosted glass",
         "controls": "Lit pills"
+      },
+      "studio": {
+        "surface": "Layered shadows",
+        "controls": "Hairline rings"
       }
     },
     "title": "Theme Settings",
@@ -4635,6 +4655,7 @@
       "website": "Web classics"
     },
     "themeDesc": {
+      "studio": "OKLCH precision neutral surfaces inspired by Beautiful UI: soft layered shadows in light mode and crisp 1px light-edge rings in dark mode.",
       "default": "A stable blue accent for general admin use and default deployments.",
       "glass": "Taken from the theme switcher's milky glass and inset highlights: frosted cards, pill controls, amber by day and moonlight silver at night.",
       "claude": "A warm paper-like palette with softer cool tones and clear hierarchy.",
@@ -4773,6 +4794,9 @@
     },
     "codexOAuthKeepalive": "Keep Codex auth active in lazy mode",
     "codexOAuthKeepaliveDesc": "Refresh expiring Codex tokens even in lazy mode, including accounts with quota cooldowns. Keeps cooldowns and sends no generation requests. Off by default.",
+    "claudeOAuthKeepalive": "Keep Claude auth active in lazy mode",
+    "claudeOAuthKeepaliveDesc": "Refresh Claude OAuth accounts with a valid refresh token within 30 minutes of AT expiry even in lazy mode, including accounts in quota cooldown. Skips API keys, Setup Tokens, disabled accounts, and revoked grants; keeps cooldowns and sends no probes. Off by default.",
+    "quietHoursKeepaliveNotice": "Background quiet hours take precedence over OAuth keepalive and pause Codex/Claude background refreshes. If a quiet window exceeds a Claude AT lifetime, the token refreshes when the window ends or on demand on the next request.",
     "title": "Settings",
     "description": "Manage system configuration and runtime parameters. Most toggles auto-save immediately.",
     "loadingTitle": "Loading Settings",
@@ -4798,8 +4822,10 @@
       "trafficDesc": "Rate limits, retries, model cooldown, scheduler",
       "grok": "Grok",
       "kiro": "Kiro",
+      "opencode": "OpenCode",
       "grokDesc": "Grok session affinity, probes, rate-limit retries, and OAuth client_id",
       "kiroDesc": "Kiro upstream domain, local usage simulation, and connectivity tests",
+      "opencodeDesc": "OpenCode Go / Zen channel connectivity tests and default probe settings",
       "antigravity": "Antigravity",
       "antigravityDesc": "OAuth client credentials for Google sign-in",
       "runtime": "Runtime",
@@ -5071,6 +5097,7 @@
       "antigravityDesc": "Probe model and prompt used by default for Test Connection and batch tests on the Antigravity accounts page. Leave the model empty to pick automatically from the account catalog (newest flash low tier first).",
       "claudeDesc": "Probe model and prompt used by default for Test Connection and batch tests on the Claude accounts page. Leave the model empty to pick automatically from the account catalog (haiku first).",
       "kiroDesc": "Probe model and prompt used by default for Test Connection and batch tests on the Kiro accounts page. Leave the model empty to pick automatically from the account catalog (haiku first).",
+      "opencodeDesc": "Probe model and prompt used by default for Test Connection and batch tests on the OpenCode accounts page. Leave the model empty to pick automatically from the account catalog.",
       "autoModel": "Auto",
       "modelHint": "Only takes effect when the model is in that account's catalog; otherwise automatic selection is used. The test dialog can still switch models.",
       "contentHint": "Empty falls back to the global test content. With multiple lines one is picked at random; supports {{time}}, {{date}}, {{rand}}, {{rand:1-100}}.",
@@ -5164,8 +5191,8 @@
     "continuousRetryMaxDuration": "Maximum retry duration (seconds)",
     "continuousRetryMaxDurationDesc": "Starts when this request first enters unlimited retry. The deadline is not reset by later attempts (1-900 seconds).",
     "continuousRetryCatchAll": "Retry eligible upstream errors (super mode)",
-    "continuousRetryCatchAllDesc": "Overrides the selectors without relying on an exhaustive code list. Except for client cancellation, local failures, an explicit upstream cyber_policy terminal, or the retry deadline, every HTTP, transport, in-stream, and unknown upstream failure is hidden and retried until a successful protocol terminal arrives.",
-    "continuousRetryCatchAllWarning": "High risk and default off: invalid requests, 403/404, authentication failures, context limits, exhausted quota or balance, non-CYB safety refusals, and unknown errors are all resubmitted. Explicit upstream cyber_policy always stops, preserves its signed decision, and retains the configured conversation lock and user cooldown. Other retries can continuously consume input/output tokens, requests, balance, account quota, spool memory and disk, keep concurrency slots occupied, and block newer requests while the client waits; image or video jobs may be generated and charged repeatedly. Enable only if you accept these costs.",
+    "continuousRetryCatchAllDesc": "Overrides the selectors without relying on an exhaustive code list. Except for client cancellation, local failures, an explicit upstream cyber_policy terminal, a recognized invalid input image, or the retry deadline, every HTTP, transport, in-stream, and unknown upstream failure is hidden and retried until a successful protocol terminal arrives.",
+    "continuousRetryCatchAllWarning": "High risk and default off: except for recognized invalid input images, invalid requests, 403/404, authentication failures, context limits, exhausted quota or balance, non-CYB safety refusals, and unknown errors are all resubmitted. Explicit upstream cyber_policy always stops, preserves its signed decision, and retains the configured conversation lock and user cooldown. Other retries can continuously consume input/output tokens, requests, balance, account quota, spool memory and disk, keep concurrency slots occupied, and block newer requests while the client waits; image or video jobs may be generated and charged repeatedly. Enable only if you accept these costs.",
     "continuousRetryCategoryTransport": "Transport / timeout / EOF / WS disconnect",
     "continuousRetryCategory429": "HTTP 429 / rate limited",
     "continuousRetryCategory4xx": "All HTTP 4xx",
@@ -5177,7 +5204,7 @@
     "continuousRetryStatusCodesDesc": "Comma-separated 100~599 codes. Selected codes override the finite retry budget (for example 403,404,501).",
     "continuousRetryErrorCodes": "Exact upstream error codes",
     "continuousRetryErrorCodesDesc": "Comma-separated codes such as rate_limited, context_length_exceeded, or server_error.",
-    "continuousRetryWarning": "Selective mode retries only the failures chosen below; super mode retries every genuine upstream failure. Client disconnects, local validation/output-policy failures, spool failures, and downstream write failures stop immediately and are never treated as upstream failures.",
+    "continuousRetryWarning": "Selective mode retries only the failures chosen below; super mode retries eligible genuine upstream failures. Recognized invalid input images always stop. Client disconnects, local validation/output-policy failures, spool failures, and downstream write failures are never treated as upstream failures.",
     "testModelLabel": "Test Connection Model",
     "testModelHint": "Model used for account connection testing",
     "testContent": "Test Content",
@@ -5195,7 +5222,7 @@
     "recoveryProbeInterval": "Recovery Probe Interval",
     "recoveryProbeIntervalDesc": "Minimum gap between recovery probes for banned accounts, in minutes (1~10080).",
     "lazyMode": "Lazy Mode",
-    "lazyModeDesc": "Disables proactive account refreshes and real responses probes. RT accounts refresh AT only when dispatched; usage keeps zero-cost wham sampling plus real-request updates.",
+    "lazyModeDesc": "Pauses proactive background token refreshes across channels (Codex / Claude / Grok / Antigravity / Kiro) as well as real responses and recovery probes. Tokens refresh on demand when dispatched, while usage keeps zero-cost wham sampling plus real-request updates. You can still opt in to Codex or Claude OAuth keepalive independently below.",
     "inviteGuide": "Referral guide after import",
     "inviteGuideDesc": "After importing accounts, probe each one's referral eligibility and show a plan for maximizing referral credits. Large imports sample the first 50 accounts.",
     "runtimeOptimization": "Runtime Optimization",
@@ -6191,6 +6218,7 @@
       "upstreamChannelAntigravity": "Antigravity",
       "upstreamChannelClaude": "Claude",
       "upstreamChannelKiro": "Kiro",
+      "upstreamChannelOpenCode": "OpenCode",
       "upstreamChannelHint": {
         "auto": "No restriction: requests are routed by model to Codex, Grok, Antigravity, Claude, or Kiro accounts.",
         "codex": "This key only dispatches to Codex accounts; Grok, Antigravity, Claude, and Kiro accounts are excluded.",
@@ -6314,6 +6342,7 @@
     "keyGroupsReconcileHint": "Group totals include repeated usage for multi-group accounts. {{ungrouped}} ungrouped account(s) are added and repeated assignments from {{multi}} multi-group account(s) are subtracted to match the deduplicated key total."
   },
   "keyUsageAccounts": {
+    "usageSampled": "Usage sampled",
     "reauthReloadPending": "Authorization was saved, but the account has not reloaded yet. Refresh the account list; do not submit the callback again.",
     "reauthorize": "Reauthorize",
     "keyRequests": "Requests by this key",

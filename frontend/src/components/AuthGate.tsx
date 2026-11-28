@@ -6,6 +6,8 @@ import {
   CheckCircle2,
   CircleAlert,
   Database,
+  Eye,
+  EyeOff,
   KeyRound,
   MonitorCheck,
   RefreshCw,
@@ -13,7 +15,9 @@ import {
   ShieldCheck,
 } from 'lucide-react'
 import { ADMIN_AUTH_REQUIRED_EVENT, api, getAdminKey, setAdminKey } from '../api'
-import { DEFAULT_SITE_LOGO, useBranding } from '../branding'
+import { useBranding } from '../branding'
+import AuthGatewayBackdrop from './AuthGatewayBackdrop'
+import AuthRoutingHero from './AuthRoutingHero'
 import type { SetupHintsResponse, SystemSettings } from '../types'
 
 type AuthStatus =
@@ -102,6 +106,8 @@ const COPY = {
     loginSubtitle: '请输入管理密钥登录',
     loginPlaceholder: '请输入 ADMIN_SECRET',
     loginError: '密钥错误，请重新输入',
+    loginThrottled: '登录失败次数过多，已暂时锁定，请 {{minutes}} 分钟后再试',
+    loginThrottledNoTime: '登录失败次数过多，已暂时锁定，请稍后再试',
     loginButton: '登录',
     loadingText: '加载中…',
   },
@@ -160,6 +166,8 @@ const COPY = {
     loginSubtitle: 'Enter your admin secret to sign in',
     loginPlaceholder: 'Enter ADMIN_SECRET',
     loginError: 'Invalid secret, please try again',
+    loginThrottled: 'Too many failed attempts. Sign-in is temporarily locked; try again in {{minutes}} min',
+    loginThrottledNoTime: 'Too many failed attempts. Sign-in is temporarily locked; please try again later',
     loginButton: 'Sign in',
     loadingText: 'Loading…',
   },
@@ -221,14 +229,7 @@ function setupMonitoringDetail(
 }
 
 function AuthBackdrop() {
-  return (
-    <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,color-mix(in_oklab,var(--color-primary)_14%,transparent),transparent_55%)]" />
-      <div className="absolute -left-24 top-16 size-72 rounded-full bg-primary/10 blur-3xl" />
-      <div className="absolute -right-16 bottom-10 size-80 rounded-full bg-[hsl(var(--info))]/10 blur-3xl" />
-      <div className="absolute inset-0 opacity-[0.035] [background-image:linear-gradient(var(--color-foreground)_1px,transparent_1px),linear-gradient(90deg,var(--color-foreground)_1px,transparent_1px)] [background-size:28px_28px]" />
-    </div>
-  )
+  return <AuthGatewayBackdrop />
 }
 
 function PanelShell({
@@ -247,8 +248,8 @@ function PanelShell({
       <AuthBackdrop />
       <div className="relative z-10 w-full max-w-[920px]">
         <div className="mb-7 text-center">
-          <div className="mx-auto mb-4 inline-flex rounded-2xl bg-card/80 p-1.5 shadow-sm ring-1 ring-border/80 backdrop-blur-sm">
-            <img src={logoSrc} alt={siteName} className="size-14 rounded-xl object-cover" />
+          <div className="auth-glass-hub mx-auto mb-4 inline-flex size-[72px] items-center justify-center rounded-[22px] p-2">
+            <img src={logoSrc} alt={siteName} className="relative z-10 size-full rounded-[15px] object-cover shadow-sm" />
           </div>
           <h1 className="text-[28px] font-bold tracking-tight text-foreground">{siteName}</h1>
           <p className="mx-auto mt-1.5 max-w-lg text-sm leading-relaxed text-muted-foreground">{subtitle}</p>
@@ -316,11 +317,12 @@ export default function AuthGate({ children }: PropsWithChildren) {
   const { t, i18n } = useTranslation()
   const lang = (i18n.language || 'zh').startsWith('zh') ? 'zh' : 'en'
   const copy = COPY[lang]
-  const { siteName, siteLogo } = useBranding()
-  const logoSrc = siteLogo || DEFAULT_SITE_LOGO
+  const { siteName, siteLogo, defaultLogo } = useBranding()
+  const logoSrc = siteLogo || defaultLogo
 
   const [status, setStatus] = useState<AuthStatus>('checking')
   const [inputKey, setInputKey] = useState('')
+  const [showKey, setShowKey] = useState(false)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -530,6 +532,14 @@ export default function AuthGate({ children }: PropsWithChildren) {
       })
       if (res.status === 401) {
         setError(copy.loginError)
+      } else if (res.status === 429) {
+        // 后端按 IP 锁定：锁定期间不比对密钥，正确密钥也会被拒，不能提示成"密钥错误"。
+        const retrySeconds = Number.parseInt(res.headers.get('Retry-After') ?? '', 10)
+        setError(
+          Number.isFinite(retrySeconds) && retrySeconds > 0
+            ? interpolate(copy.loginThrottled, { minutes: Math.ceil(retrySeconds / 60) })
+            : copy.loginThrottledNoTime,
+        )
       } else if (res.status === 503) {
         setStatus('need_bootstrap')
       } else if (!res.ok) {
@@ -899,36 +909,57 @@ export default function AuthGate({ children }: PropsWithChildren) {
     return (
       <div className="relative flex min-h-dvh items-center justify-center bg-background px-4 py-10">
         <AuthBackdrop />
-        <div className="relative z-10 mx-auto w-full max-w-[420px]">
-          <div className="mb-7 text-center">
-            <div className="mx-auto mb-4 inline-flex rounded-2xl bg-card/80 p-1.5 shadow-sm ring-1 ring-border/80 backdrop-blur-sm">
-              <img src={logoSrc} alt={siteName} className="size-14 rounded-xl object-cover" />
-            </div>
+        <div className="relative z-10 mx-auto w-full max-w-[540px]">
+          <div className="mb-6 text-center">
+            <AuthRoutingHero siteName={siteName} logoSrc={logoSrc} />
             <h1 className="text-[28px] font-bold tracking-tight text-foreground">{siteName}</h1>
             <p className="mt-1.5 text-sm text-muted-foreground">{copy.loginSubtitle}</p>
           </div>
 
-          <div className="rounded-2xl border border-border/80 bg-card/90 p-5 shadow-lg backdrop-blur-sm sm:p-6">
-            <div className="mb-5 flex items-center gap-2.5">
-              <div className="flex size-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/15">
-                <KeyRound className="size-4" />
+          <div className="auth-login-card relative mx-auto w-full max-w-[420px] overflow-hidden rounded-2xl p-6 sm:p-7">
+            {/* Subtle signature 3-tone prism highlight rim along the top edge */}
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-x-10 top-0 h-[1.5px] bg-gradient-to-r from-transparent via-sky-400/75 via-50% to-transparent dark:via-cyan-400/80"
+            />
+            <div className="mb-5 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="flex size-9 items-center justify-center rounded-xl bg-gradient-to-br from-sky-500/12 via-primary/10 to-violet-500/14 text-primary ring-1 ring-primary/15">
+                  <KeyRound className="size-4" />
+                </div>
+                <div>
+                  <div className="text-sm font-semibold text-foreground">{t('settings.adminSecret')}</div>
+                  <div className="font-mono text-[11px] text-muted-foreground">ADMIN_SECRET</div>
+                </div>
               </div>
-              <div>
-                <div className="text-sm font-semibold text-foreground">{t('settings.adminSecret')}</div>
-                <div className="text-[12px] text-muted-foreground">{copy.loginSubtitle}</div>
-              </div>
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-background/70 px-2.5 py-1 font-mono text-[10.5px] font-medium text-muted-foreground backdrop-blur-sm">
+                <span className="size-1.5 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.75)]" />
+                GATEWAY
+              </span>
             </div>
             <div className="space-y-4">
-              <div>
+              <div className="relative">
+                <KeyRound
+                  aria-hidden
+                  className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground/75"
+                />
                 <input
-                  type="password"
+                  type={showKey ? 'text' : 'password'}
                   value={inputKey}
                   onChange={(e) => { setInputKey(e.target.value); setError('') }}
                   onKeyDown={(e) => { if (e.key === 'Enter') void handleLogin() }}
                   placeholder={copy.loginPlaceholder}
                   autoFocus
-                  className="h-11 w-full rounded-xl border border-input bg-background/80 px-3.5 text-[15px] outline-none transition-all focus:border-primary/40 focus:ring-2 focus:ring-primary/15"
+                  className="h-11 w-full rounded-xl border border-input bg-background/80 pl-10 pr-10 text-[15px] outline-none transition-all focus:border-primary/40 focus:ring-2 focus:ring-primary/15"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowKey((prev) => !prev)}
+                  aria-label={showKey ? 'Hide secret' : 'Show secret'}
+                  className="absolute right-2.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-lg text-muted-foreground/80 transition-colors hover:bg-muted/70 hover:text-foreground"
+                >
+                  {showKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                </button>
               </div>
 
               {error && (
@@ -940,9 +971,13 @@ export default function AuthGate({ children }: PropsWithChildren) {
               <button
                 onClick={() => void handleLogin()}
                 disabled={submitting}
-                className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary text-[15px] font-semibold text-primary-foreground shadow-sm transition-all hover:bg-primary/90 hover:shadow-md disabled:opacity-50"
+                className="group flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary text-[15px] font-semibold text-primary-foreground shadow-sm transition-all hover:bg-primary/90 hover:shadow-md disabled:opacity-50"
               >
-                {submitting ? <RefreshCw className="size-4 animate-spin" /> : <ArrowRight className="size-4" />}
+                {submitting ? (
+                  <RefreshCw className="size-4 animate-spin" />
+                ) : (
+                  <ArrowRight className="size-4 transition-transform duration-200 group-hover:translate-x-0.5" />
+                )}
                 {submitting ? copy.loadingText : copy.loginButton}
               </button>
             </div>
