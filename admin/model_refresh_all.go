@@ -39,6 +39,7 @@ var modelRefreshChannelOrder = []string{
 	database.UpstreamChannelGrok,
 	database.UpstreamChannelAntigravity,
 	database.UpstreamChannelKiro,
+	database.UpstreamChannelOpenCode,
 }
 
 // channelModelRefreshResult 是单个渠道的刷新结果。
@@ -193,6 +194,7 @@ func (h *Handler) defaultModelRefreshFuncs() map[string]channelModelRefreshFunc 
 		database.UpstreamChannelGrok:        h.refreshGrokChannelModels,
 		database.UpstreamChannelAntigravity: h.refreshAntigravityChannelModels,
 		database.UpstreamChannelKiro:        h.refreshKiroChannelModels,
+		database.UpstreamChannelOpenCode:    h.refreshOpenCodeChannelModels,
 	}
 }
 
@@ -214,8 +216,10 @@ func (h *Handler) modelPricingCatalogKeys(ctx context.Context) []string {
 		}
 	}
 	appendUnique(append(h.grokBillingModelIDs(), grokDefaultDisplayModelIDs()...))
+	appendUnique(append(h.claudeChannelModels(), claudeDefaultDisplayModelIDs()...))
 	appendUnique(h.antigravityChannelModels())
-	appendUnique(h.claudeChannelModels())
+	appendUnique(h.kiroChannelModels())
+	appendUnique(h.openCodeChannelModels())
 	return keys
 }
 

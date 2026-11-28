@@ -247,6 +247,8 @@ type Account struct {
 	ClaudeClientVersionOverride  string
 	// Kiro 是 upstream_type=kiro 账号的专有凭据投影（见 kiro_account.go）。
 	Kiro KiroCredential
+	// OpenCode 是 upstream_type=opencode 账号的专有凭据投影（见 opencode_account.go）。
+	OpenCode OpenCodeCredential
 	// claudeSessionWindow 是 Claude 账号的全局默认并发会话窗口数(装载时从系统设置
 	// 快照,>0 时作为无账号级/分组覆盖时的基础并发回退)。
 	claudeSessionWindow int64
@@ -427,6 +429,10 @@ type Account struct {
 	// 仅内存态。刷新成功或人工清理(ClearCooldown)清零;达到
 	// permanentRefreshFailureTerminalLimit 后转 error 终态并退出恢复探测轮换。
 	PermanentRefreshFailures int
+	// claudeRefreshFailures / claudeRefreshNextRetryAt 记录 Claude OAuth
+	// 后台续期的瞬时错误退避状态（受 a.mu 保护）。刷新成功、凭据变更或人工清理后清零。
+	claudeRefreshFailures    int
+	claudeRefreshNextRetryAt time.Time
 	// LastFailureKind 记录最近一次失败的归因（与 ReportRequestFailure 的 kind
 	// 同义），仅内存态。用于把"传输层抖动"与"账号自身有问题"区分开，见
 	// recomputeSchedulerLocked 里对孤立断流的豁免。
@@ -628,6 +634,9 @@ func (a *Account) hasDispatchCredentialLocked() bool {
 	if a.isGrokAPILocked() {
 		// API Key 直接可调度；OAuth 需等 AT 刷出（RT-only 由后台/lazy 刷新补齐）
 		return strings.TrimSpace(a.APIKey) != "" || strings.TrimSpace(a.AccessToken) != ""
+	}
+	if a.isOpenCodeLocked() {
+		return strings.TrimSpace(a.APIKey) != ""
 	}
 	if a.isCodexAgentIdentityLocked() {
 		// Agent Identity 无 AT：私钥即凭据，可直接调度（task_id 于请求前惰性注册）。
@@ -2483,6 +2492,12 @@ func cooldownMatchesReset(cooldownUntil, resetAt time.Time) bool {
 // Authentication failures retain the higher priority used by the runtime cache.
 // The caller must hold a.mu.
 func (a *Account) usageCooldownTargetLocked(now, resetAt time.Time, reason string) (time.Time, string, bool) {
+	// An expired 401 is eligible for verification, not for replacement by a
+	// quota cooldown. While it is active, the normal max-deadline rule below
+	// can extend it without changing the authorization reason.
+	if a.hasCodexAuthorizationCooldownLocked() && !now.Before(a.CooldownUtil) {
+		return a.CooldownUtil, a.CooldownReason, false
+	}
 	if a.Status == StatusCooldown && now.Before(a.CooldownUtil) {
 		if reason == ResponsesRateLimitedCooldownReason && a.usageWindowCooldownLocked() {
 			if resetAt.Before(a.CooldownUtil) {
@@ -2748,20 +2763,26 @@ func (a *Account) MarkUsageFrameObserved(kind string, at time.Time) {
 // It intentionally avoids GetSchedulerDebugSnapshot and other recomputing
 // getters, which are too expensive for a one-second cadence over a large page.
 type AccountLiveUsageSnapshot struct {
-	QuotaPauseWindow    string
-	Status              string
-	UsingCredits        bool
-	PlanType            string
-	CreditsValid        bool
-	Credits             CreditBalanceSnapshot
-	UsagePercent5h      float64
-	UsagePercent5hValid bool
-	Reset5hAt           time.Time
-	UsageUpdatedAt5h    time.Time
-	UsagePercent7d      float64
-	UsagePercent7dValid bool
-	Reset7dAt           time.Time
-	UsageUpdatedAt      time.Time
+	CooldownUntil          time.Time
+	Window7dSeconds        int64
+	UsagePercentSpark      float64
+	UsagePercentSparkValid bool
+	ResetSparkAt           time.Time
+	UsageUpdatedAtSpark    time.Time
+	QuotaPauseWindow       string
+	Status                 string
+	UsingCredits           bool
+	PlanType               string
+	CreditsValid           bool
+	Credits                CreditBalanceSnapshot
+	UsagePercent5h         float64
+	UsagePercent5hValid    bool
+	Reset5hAt              time.Time
+	UsageUpdatedAt5h       time.Time
+	UsagePercent7d         float64
+	UsagePercent7dValid    bool
+	Reset7dAt              time.Time
+	UsageUpdatedAt         time.Time
 	// UsageFrameLastAt/Kind record the last WS quota frame ingested for this
 	// account, as opposed to snapshots that only advance on WHAM probes.
 	UsageFrameLastAt   time.Time
@@ -2778,22 +2799,28 @@ func (a *Account) GetAccountLiveUsageSnapshot() AccountLiveUsageSnapshot {
 	defer a.mu.RUnlock()
 	now := time.Now()
 	return AccountLiveUsageSnapshot{
-		QuotaPauseWindow:    a.quotaAutoPauseWindowLocked(now),
-		Status:              a.runtimeStatusLocked(now),
-		UsingCredits:        a.usingCreditsLocked(now),
-		PlanType:            a.PlanType,
-		CreditsValid:        a.CreditsValid,
-		Credits:             a.creditSnapshotLocked(),
-		UsagePercent5h:      a.UsagePercent5h,
-		UsagePercent5hValid: a.UsagePercent5hValid,
-		Reset5hAt:           a.Reset5hAt,
-		UsageUpdatedAt5h:    a.UsageUpdatedAt5h,
-		UsagePercent7d:      a.UsagePercent7d,
-		UsagePercent7dValid: a.UsagePercent7dValid,
-		Reset7dAt:           a.Reset7dAt,
-		UsageUpdatedAt:      a.UsageUpdatedAt,
-		UsageFrameLastAt:    a.usageFrameLastAt,
-		UsageFrameLastKind:  a.usageFrameLastKind,
+		CooldownUntil:          a.CooldownUtil,
+		Window7dSeconds:        a.Window7dSeconds,
+		UsagePercentSpark:      a.UsagePercentSpark,
+		UsagePercentSparkValid: a.UsagePercentSparkValid,
+		ResetSparkAt:           a.ResetSparkAt,
+		UsageUpdatedAtSpark:    a.UsageUpdatedAtSpark,
+		QuotaPauseWindow:       a.quotaAutoPauseWindowLocked(now),
+		Status:                 a.runtimeStatusLocked(now),
+		UsingCredits:           a.usingCreditsLocked(now),
+		PlanType:               a.PlanType,
+		CreditsValid:           a.CreditsValid,
+		Credits:                a.creditSnapshotLocked(),
+		UsagePercent5h:         a.UsagePercent5h,
+		UsagePercent5hValid:    a.UsagePercent5hValid,
+		Reset5hAt:              a.Reset5hAt,
+		UsageUpdatedAt5h:       a.UsageUpdatedAt5h,
+		UsagePercent7d:         a.UsagePercent7d,
+		UsagePercent7dValid:    a.UsagePercent7dValid,
+		Reset7dAt:              a.Reset7dAt,
+		UsageUpdatedAt:         a.UsageUpdatedAt,
+		UsageFrameLastAt:       a.usageFrameLastAt,
+		UsageFrameLastKind:     a.usageFrameLastKind,
 	}
 }
 
@@ -3761,8 +3788,8 @@ func (a *Account) NeedsUsageProbe(maxAge time.Duration) bool {
 	if a.isRelayStyleLocked() && !a.isClaudeOAuthLocked() {
 		return false // wham 探针是 ChatGPT 专属；中转/Grok 账号没有该端点
 	}
-	if a.Status == StatusCooldown && a.CooldownReason == "unauthorized" && (a.CooldownUtil.IsZero() || now.Before(a.CooldownUtil)) {
-		return false // token 失效，wham 也会 401，探针无意义
+	if a.hasCodexAuthorizationCooldownLocked() || (a.Status == StatusCooldown && a.CooldownReason == "unauthorized" && (a.CooldownUtil.IsZero() || now.Before(a.CooldownUtil))) {
+		return false // A native Codex 401 is verified by the dedicated recovery probe.
 	}
 	// Claude uses the native Messages endpoint rather than WHAM and may legally
 	// omit both unified quota windows. In that case the shared 7d validity bits
@@ -3918,7 +3945,14 @@ func (a *Account) NeedsRecoveryProbe(minInterval time.Duration) bool {
 	if a.isRelayStyleLocked() {
 		return false // 恢复探测走 ChatGPT 探针；中转/Grok 账号不适用
 	}
-	if a.RefreshToken == "" {
+	if a.isNativeCodexBearerLocked() && a.Status == StatusError {
+		return false
+	}
+	if a.hasCodexAuthorizationCooldownLocked() {
+		if !a.hasUsableCodexProbeTokenLocked(time.Now()) && strings.TrimSpace(a.RefreshToken) == "" {
+			return false
+		}
+	} else if a.RefreshToken == "" {
 		return false
 	}
 	if a.PermanentRefreshFailures >= permanentRefreshFailureTerminalLimit {
@@ -4026,6 +4060,7 @@ type Store struct {
 	autoCleanExpired                   atomic.Bool
 	lazyMode                           atomic.Bool
 	codexOAuthKeepalive                atomic.Bool
+	claudeOAuthKeepalive               atomic.Bool
 	autoCleanupBatch                   atomic.Bool
 	maxRetries                         atomic.Int64 // 请求失败最大重试次数（换号重试）
 	maxRateLimitRetries                atomic.Int64 // 429 最大换号重试次数
@@ -4866,6 +4901,7 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 	s.autoCleanExpired.Store(settings.AutoCleanExpired)
 	s.lazyMode.Store(settings.LazyMode)
 	s.codexOAuthKeepalive.Store(settings.CodexOAuthKeepaliveEnabled)
+	s.claudeOAuthKeepalive.Store(settings.ClaudeOAuthKeepaliveEnabled)
 	retries := int64(settings.MaxRetries)
 	if retries <= 0 {
 		retries = 2 // 默认重试 2 次
@@ -6228,11 +6264,12 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	isGrokAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamGrok) && (strings.TrimSpace(apiKey) != "" || rt != "" || at != "")
 	isAntigravityAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamAntigravity) && (strings.TrimSpace(apiKey) != "" || rt != "" || at != "")
 	isKiroAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamKiro) && (strings.TrimSpace(apiKey) != "" || rt != "" || at != "")
+	isOpenCodeAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamOpenCode) && strings.TrimSpace(apiKey) != ""
 	// Agent Identity：无 AT/RT，凭 agent_private_key 动态签名，不能被下面的空凭据 guard 拒绝。
 	isAgentIdentityAccount := strings.EqualFold(strings.TrimSpace(row.GetCredential("auth_mode")), CodexAuthModeAgentIdentity) &&
 		strings.TrimSpace(row.GetCredential("agent_runtime_id")) != "" &&
 		strings.TrimSpace(row.GetCredential("agent_private_key")) != ""
-	if rt == "" && st == "" && at == "" && !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount && !isKiroAccount && !isAgentIdentityAccount {
+	if rt == "" && st == "" && at == "" && !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount && !isKiroAccount && !isOpenCodeAccount && !isAgentIdentityAccount {
 		log.Printf("[账号 %d] 缺少 refresh_token、session_token 和 access_token，跳过", row.ID)
 		return nil
 	}
@@ -6275,6 +6312,11 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 				account.MarkClaudeUsageObservation(observedAt)
 			} else {
 				log.Printf("[账号 %d] 解析 claude_usage_probe_at 失败: %v", row.ID, parseErr)
+			}
+		}
+		if nextRetryRaw := strings.TrimSpace(row.GetCredential(ClaudeRefreshNextRetryAtCredentialKey)); nextRetryRaw != "" {
+			if nextRetryAt := parseOAuthCredentialExpiry(nextRetryRaw); !nextRetryAt.IsZero() {
+				account.claudeRefreshNextRetryAt = nextRetryAt
 			}
 		}
 	}
@@ -6443,17 +6485,26 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	if isKiroAccount {
 		account.applyKiroRowLocked(row)
 	}
+	if isOpenCodeAccount {
+		account.applyOpenCodeRowLocked(row)
+	}
 	if subExp := row.GetCredential("subscription_expires_at"); subExp != "" {
 		if parsed, err := time.Parse(time.RFC3339, subExp); err == nil {
 			account.SubscriptionExpiresAt = parsed
 		}
 	}
 	account.subscriptionMeta = SubscriptionMetaFromCredentials(row.GetCredential)
-	if row.CooldownUntil.Valid {
-		if time.Now().Before(row.CooldownUntil.Time) {
+	nativeCodex := account.isNativeCodexBearerLocked()
+	if row.CooldownUntil.Valid && (!nativeCodex || account.Status != StatusError) {
+		// An expired native Codex 401 permits verification, not dispatch.
+		keepUnauthorized := nativeCodex && row.CooldownReason == "unauthorized"
+		if keepUnauthorized || time.Now().Before(row.CooldownUntil.Time) {
 			account.SetCooldownUntil(row.CooldownUntil.Time, row.CooldownReason)
+			if keepUnauthorized {
+				account.ErrorMsg = row.ErrorMessage
+			}
 		} else if row.CooldownReason != "" {
-			if err := s.db.ClearCooldown(ctx, row.ID); err != nil {
+			if _, err := s.db.ClearCooldownIfReasonAndUntil(ctx, row.ID, row.CooldownReason, row.CooldownUntil.Time); err != nil {
 				log.Printf("[账号 %d] 清理过期冷却状态失败: %v", row.ID, err)
 			}
 		}
@@ -6880,7 +6931,7 @@ func (s *Store) StartBackgroundRefresh() {
 				catalogTimer.Reset(antigravityCatalogRefreshInterval)
 			case <-refreshTimer.C:
 				if s.GetLazyMode() {
-					if s.GetCodexOAuthKeepalive() {
+					if s.GetCodexOAuthKeepalive() || s.GetClaudeOAuthKeepalive() {
 						s.parallelRefreshAll(backgroundCtx)
 					}
 					s.TriggerUsageProbeAsync()
@@ -10238,14 +10289,14 @@ func (s *Store) GetAPIKeyAllowedGroups(apiKeyID int64) []int64 {
 	return cloneInt64Slice(s.apiKeyAllowedGroups[apiKeyID])
 }
 
-// SetAPIKeyUpstreamChannel 设置某 API Key 的上游渠道限定（codex/grok/antigravity/claude，空=不限）。
+// SetAPIKeyUpstreamChannel 设置某 API Key 的上游渠道限定（codex/grok/antigravity/claude/kiro/opencode，空=不限）。
 // 仅在取值真正变化时重建调度器。
 func (s *Store) SetAPIKeyUpstreamChannel(apiKeyID int64, channel string) {
 	if apiKeyID <= 0 {
 		return
 	}
 	channel = strings.ToLower(strings.TrimSpace(channel))
-	if channel != database.UpstreamChannelCodex && channel != database.UpstreamChannelGrok && channel != database.UpstreamChannelAntigravity && channel != database.UpstreamChannelClaude {
+	if !database.IsValidUpstreamChannel(channel) {
 		channel = ""
 	}
 	s.apiKeyGroupsMu.Lock()
@@ -10354,7 +10405,7 @@ func apiKeyAllowsAccountConstraints(acc *Account, allowedGroups, noAffinityGroup
 			return false
 		}
 	case database.UpstreamChannelCodex:
-		if acc.IsGrokAPI() || acc.IsAntigravityAPI() || acc.IsClaudeOAuth() || acc.IsKiro() {
+		if acc.IsGrokAPI() || acc.IsAntigravityAPI() || acc.IsClaudeOAuth() || acc.IsKiro() || acc.IsOpenCode() {
 			return false
 		}
 	case database.UpstreamChannelAntigravity:
@@ -10367,6 +10418,10 @@ func apiKeyAllowsAccountConstraints(acc *Account, allowedGroups, noAffinityGroup
 		}
 	case database.UpstreamChannelKiro:
 		if !acc.IsKiro() {
+			return false
+		}
+	case database.UpstreamChannelOpenCode:
+		if !acc.IsOpenCode() {
 			return false
 		}
 	}
@@ -11299,6 +11354,8 @@ func (s *Store) ClearCooldown(acc *Account) {
 	acc.CooldownReason = ""
 	// 人工清理即重新给自愈机会:重置死 RT 判定,恢复探测资格随之恢复。
 	acc.PermanentRefreshFailures = 0
+	acc.claudeRefreshFailures = 0
+	acc.claudeRefreshNextRetryAt = time.Time{}
 	acc.transientRateLimitBackoff = 0
 	acc.transientRateLimitUntil = time.Time{}
 	if acc.transientRateLimitTimer != nil {
@@ -12395,6 +12452,13 @@ func (s *Store) parallelRecoveryProbe(ctx context.Context) {
 
 			probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
+			account.mu.RLock()
+			codex401 := account.hasCodexAuthorizationCooldownLocked()
+			account.mu.RUnlock()
+			if codex401 {
+				s.probeCodexAuthorization(probeCtx, account, probeFn)
+				return
+			}
 
 			if account.NeedsRefresh() {
 				if err := s.refreshAccount(probeCtx, account); err != nil {
@@ -12405,16 +12469,19 @@ func (s *Store) parallelRecoveryProbe(ctx context.Context) {
 			if err := probeFn(probeCtx, account); err != nil {
 				log.Printf("[账号 %d] 恢复探测失败: %v", account.DBID, err)
 			} else {
+				account.mu.Lock()
+				// A 401 observed during a legacy probe still needs dedicated evidence.
+				if account.hasCodexAuthorizationCooldownLocked() {
+					account.mu.Unlock()
+					return
+				}
 				// 用量已耗尽的账号不重置状态
-				account.mu.RLock()
-				exhausted := account.usageExhaustedLocked()
-				account.mu.RUnlock()
-				if exhausted {
+				if account.usageExhaustedLocked() {
+					account.mu.Unlock()
 					log.Printf("[账号 %d] 恢复探测成功但用量已耗尽，保持当前状态", account.DBID)
 				} else {
 					// 探测成功：将账号从 banned 升级到 warm，给予重新调度的机会
 					atomic.StoreInt32(&account.Disabled, 0) // 清除原子禁用标志
-					account.mu.Lock()
 					if account.HealthTier == HealthTierBanned {
 						account.HealthTier = HealthTierWarm
 						account.SchedulerScore = 80
@@ -12599,8 +12666,11 @@ func (s *Store) parallelRefreshAll(ctx context.Context) {
 	sem := make(chan struct{}, 10)
 	var wg sync.WaitGroup
 
+	lazyMode := s.GetLazyMode()
+	codexKeepalive := !lazyMode || s.GetCodexOAuthKeepalive()
+	claudeKeepalive := !lazyMode || s.GetClaudeOAuthKeepalive()
 	for i, acc := range accounts {
-		if !s.shouldBackgroundRefresh(acc, s.GetLazyMode()) {
+		if !s.shouldBackgroundRefreshForPolicy(acc, lazyMode, codexKeepalive, claudeKeepalive) {
 			continue
 		}
 
@@ -12653,6 +12723,9 @@ func (s *Store) refreshAccountWithOptions(ctx context.Context, acc *Account, for
 	}
 	if acc.IsKiro() {
 		return s.refreshKiroAccount(ctx, acc, forceRefresh)
+	}
+	if acc.IsOpenCode() {
+		return nil
 	}
 	return s.refreshCodexAccount(ctx, acc, forceRefresh)
 }

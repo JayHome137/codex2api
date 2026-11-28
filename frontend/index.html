@@ -19,8 +19,16 @@
 
         // Match ThemeProvider before React loads, including its system fallback.
         const mode = readPreference('theme')
-        if (mode === 'dark' || (mode !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)) {
+        const isDark = mode === 'dark' || (mode !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)
+        if (isDark) {
           root.classList.add('dark')
+        } else if (typeof document.querySelectorAll === 'function') {
+          document.querySelectorAll('link[rel="icon"], link[rel="apple-touch-icon"]').forEach(function (link) {
+            const href = link.getAttribute('href')
+            if (href && href.endsWith('/favicon.png')) {
+              link.setAttribute('href', href.replace(/\/favicon\.png$/, '/favicon-light.png'))
+            }
+          })
         }
 
         const colorThemes = [
@@ -28,10 +36,10 @@
           'one-dark-pro', 'github-dimmed', 'tokyo-night', 'dracula', 'monokai-pro',
           'nord', 'catppuccin', 'gruvbox', 'solarized-light', 'quiet-light', 'ayu-light', 'noctis-lux',
           'ocean', 'forest', 'lavender', 'amber', 'espresso', 'sakura', 'mint', 'midnight',
-          'glass', 'github', 'vercel', 'google', 'apple', 'notion', 'stripe', 'spotify', 'slack',
+          'studio', 'glass', 'github', 'vercel', 'google', 'apple', 'notion', 'stripe', 'spotify', 'slack',
         ]
         const colorTheme = readPreference('color-theme')
-        root.classList.add('theme-' + (colorThemes.includes(colorTheme) ? colorTheme : 'default'))
+        root.classList.add('theme-' + (colorThemes.includes(colorTheme) ? colorTheme : 'studio'))
       })()
     </script>
   </head>

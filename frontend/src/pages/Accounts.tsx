@@ -1,3 +1,5 @@
+import { CooldownTimer, UsingCreditsBadge } from "../components/AccountStatusIndicators";
+import AccountResetCreditBadge from "../components/AccountResetCreditBadge";
 import AccountReauthorizationForm from "../components/AccountReauthorizationForm";
 import { parseOAuthCallbackParams } from "../utils/oauthCallback";
 import { copyTextToClipboard } from "../utils/copyTextToClipboard";
@@ -5,10 +7,18 @@ import { getAccountQuotaPausePresentation } from "@/lib/accountQuotaPause";
 import { AccountCardSurface, AccountCardHeader, AccountCardBody, AccountCardDetailLink, AccountCardMetric, AccountCardTimestamp } from "../components/AccountCardSurface";
 import AccountUsageBar from "../components/AccountUsageBar";
 import APIKeyMultiSelect from "../components/APIKeyMultiSelect";
-import PlanBadge, { normalizePlanType } from "../components/AccountPlanBadge";
+import {
+  exceedsFolderImportBatchLimit,
+  MAX_FOLDER_IMPORT_BATCHES,
+  runMixedAccountImport,
+  sendAccountImportBatches,
+  splitAccountImportFiles,
+} from "../lib/accountImportBatches";
+import PlanBadge, { isSparkUsagePlan, normalizePlanType } from "../components/AccountPlanBadge";
 import { useIntelligenceBars } from "../hooks/useIntelligenceBars";
 import AccountIntelligenceBar, { AccountIntelligenceActions } from "../components/AccountIntelligenceBar";
 import type { IntelligenceBar } from "../lib/intelligenceCheck";
+import { accountGroupChanges } from "../lib/accountQuickConfig";
 import type { ChangeEvent, DragEvent, ReactNode } from "react";
 import { memo, useCallback, useEffect, useRef, useState, useMemo } from "react";
 
@@ -45,6 +55,7 @@ import GrokAccounts from "./GrokAccounts";
 import AntigravityAccounts from "./AntigravityAccounts";
 import ClaudeAccounts from "./ClaudeAccounts";
 import KiroAccounts from "./KiroAccounts";
+import OpenCodeAccounts from "./OpenCodeAccounts";
 import { mergeAccountLiveState, useAccountLiveState } from "../hooks/useAccountLiveState";
 import PageHeader from "../components/PageHeader";
 import {
@@ -282,11 +293,8 @@ import ChipInput from "../components/ChipInput";
 
 const OPERATION_PROGRESS_FLUSH_INTERVAL_MS = 200;
 
-// 账号导入的体积约束。后端对导入端点放宽到 200MB;单个文件无法再切分,超过
-// 上限直接拒绝。多文件按累计大小切成多批,每批控制在 150MB 内(留余量给
-// multipart 边界与其它表单字段),避免单个请求体触发后端上限。
+// Single files cannot be split; multipart batch limits are applied separately.
 const IMPORT_MAX_FILE_BYTES = 200 * 1024 * 1024;
-const IMPORT_BATCH_MAX_BYTES = 150 * 1024 * 1024;
 const API_BALANCE_CACHE_TTL_MS = 60_000;
 const API_BALANCE_ERROR_CACHE_TTL_MS = 15_000;
 
@@ -390,25 +398,6 @@ function AccountConcurrencyBadge({ account }: { account: AccountRow }) {
       )}
     </span>
   );
-}
-
-// splitFilesIntoBatches 按累计字节大小把文件分批。单个文件即便超过 batchMax
-// 也自成一批(交由后端上限兜底),保证每个文件都被投递。
-function splitFilesIntoBatches(files: File[], batchMax: number): File[][] {
-  const batches: File[][] = [];
-  let current: File[] = [];
-  let currentSize = 0;
-  for (const file of files) {
-    if (current.length > 0 && currentSize + file.size > batchMax) {
-      batches.push(current);
-      current = [];
-      currentSize = 0;
-    }
-    current.push(file);
-    currentSize += file.size;
-  }
-  if (current.length > 0) batches.push(current);
-  return batches.length > 0 ? batches : [[]];
 }
 
 const ACCOUNT_ANALYSIS_VISIBILITY_KEY = "codex2api:accounts:analysis-visible";
@@ -1148,41 +1137,6 @@ interface AccountRowActions {
   usageRefreshed: () => void;
 }
 
-function formatCountdownRemaining(untilMs: number, nowMs: number): string {
-  const diff = Math.max(0, untilMs - nowMs);
-  if (diff <= 0) return "";
-  const hours = Math.floor(diff / 3600000);
-  const minutes = Math.floor((diff % 3600000) / 60000);
-  const seconds = Math.floor((diff % 60000) / 1000);
-  if (hours > 0) {
-    return `${hours}h ${String(minutes).padStart(2, "0")}m ${String(seconds).padStart(2, "0")}s`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
-  }
-  return `${seconds}s`;
-}
-
-function useCountdownRemaining(until?: string): string {
-  const [remaining, setRemaining] = useState("");
-
-  useEffect(() => {
-    if (!until) {
-      setRemaining("");
-      return;
-    }
-    const target = new Date(until).getTime();
-    const update = () => {
-      setRemaining(formatCountdownRemaining(target, Date.now()));
-    };
-    update();
-    const id = setInterval(update, 1000);
-    return () => clearInterval(id);
-  }, [until]);
-
-  return remaining;
-}
-
 // memo 边界:宿主 Accounts 组件有上百个 state,任何弹窗/表单/进度条状态变化都会
 // 整树重渲染;行数据没变时这里直接跳过,交互卡顿的大头就在这。
 const AccountTableRow = memo(function AccountTableRow({
@@ -1859,7 +1813,9 @@ export default function Accounts() {
         ? "claude"
         : normalizedPath.endsWith("/accounts/kiro")
           ? "kiro"
-          : "codex";
+          : normalizedPath.endsWith("/accounts/opencode")
+            ? "opencode"
+            : "codex";
   const { channels: visibleChannels, isChannelVisible } = useVisibleChannels();
   // 设置页隐藏了某个渠道后，直接打开它的账号路由要回落到 Codex 视图。
   useEffect(() => {
@@ -1876,7 +1832,9 @@ export default function Accounts() {
               ? "/accounts/claude"
               : view === "kiro"
                 ? "/accounts/kiro"
-                : "/accounts",
+                : view === "opencode"
+                  ? "/accounts/opencode"
+                  : "/accounts",
       );
     },
     [navigate],
@@ -2142,6 +2100,7 @@ export default function Accounts() {
     failed: 0,
     done: false,
   });
+  const [importPreflight, setImportPreflight] = useState<{ current: number; total: number } | null>(null);
   // 导入后的邀请积分引导。ids 是本次导入新建的账号,后端会过滤出能发邀请的。
   const [inviteGuide, setInviteGuide] = useState<{ show: boolean; ids: number[] }>({
     show: false,
@@ -4375,9 +4334,19 @@ export default function Accounts() {
       return false;
     }
 
-    // 按累计大小把文件切成多批,每批控制在 IMPORT_BATCH_MAX_BYTES 内,避免单个
-    // 请求体过大触发后端限制;后端导入无状态且按凭据幂等去重,分批完全安全。
-    const batches = splitFilesIntoBatches(files, IMPORT_BATCH_MAX_BYTES);
+    if (!files.length) return false;
+    const isJSON = format === "json" || format === "json_at";
+    const batches = splitAccountImportFiles(files);
+    if (exceedsFolderImportBatchLimit(batches, isJSON)) {
+      showToast(
+        t("accounts.importTooManyBatches", {
+          count: batches.length,
+          max: MAX_FOLDER_IMPORT_BATCHES,
+        }),
+        "error",
+      );
+      return false;
+    }
 
     setImporting(true);
     setImportProgress({
@@ -4405,40 +4374,49 @@ export default function Accounts() {
     // 本次导入注册进代理池的代理统计,跨批累加后在结束 toast 里汇报。
     const proxySummary = { imported: 0, skipped: 0, warnings: [] as string[] };
     // 只有 JSON 系格式的文件才可能携带代理,后端也只对这两种格式认这个开关。
-    const carriesFileProxies =
-      importFileProxies && (format === "json" || format === "json_at");
+    const carriesFileProxies = importFileProxies && isJSON;
 
+    const makeForm = (batch: File[]) => {
+      const formData = new FormData();
+      if (format !== "txt") formData.append("format", format);
+      const trimmedImportProxy = (options.proxyUrl ?? importProxyUrl).trim();
+      if (trimmedImportProxy) formData.append("proxy_url", trimmedImportProxy);
+      const timezone = options.timezone?.trim();
+      if (timezone) formData.append("timezone", timezone);
+      if (carriesFileProxies) formData.append("import_proxy", "true");
+      const routedHeaders = applyOptionalWorkspaceRouteHeader(
+        parsedCustomHeaders.value,
+        options.workspaceRouteID,
+      );
+      if (routedHeaders) {
+        formData.append("custom_headers", JSON.stringify(routedHeaders));
+      }
+      if (allowDuplicate) formData.append("allow_duplicate", "true");
+      if (importGroupIds.length > 0) {
+        formData.append("group_ids", JSON.stringify(importGroupIds));
+      }
+      for (const f of batch) formData.append("file", f);
+      return formData;
+    };
+
+    let completedBatches = 0;
     try {
-      for (let i = 0; i < batches.length; i++) {
-        const batch = batches[i];
-        const formData = new FormData();
-        if (format !== "txt") formData.append("format", format);
-        const trimmedImportProxy = (options.proxyUrl ?? importProxyUrl).trim();
-        if (trimmedImportProxy) formData.append("proxy_url", trimmedImportProxy);
-        const timezone = options.timezone?.trim();
-        if (timezone) formData.append("timezone", timezone);
-        if (carriesFileProxies) formData.append("import_proxy", "true");
-        const routedHeaders = applyOptionalWorkspaceRouteHeader(
-          parsedCustomHeaders.value,
-          options.workspaceRouteID,
-        );
-        if (routedHeaders) {
-          formData.append("custom_headers", JSON.stringify(routedHeaders));
-        }
-        if (allowDuplicate) formData.append("allow_duplicate", "true");
-        if (importGroupIds.length > 0) {
-          formData.append("group_ids", JSON.stringify(importGroupIds));
-        }
-        for (const f of batch) formData.append("file", f);
-
-        const res = await fetch("/api/admin/accounts/import", {
+      const adminKey = getAdminKey();
+      const responses = sendAccountImportBatches(
+        batches,
+        isJSON,
+        makeForm,
+        (path, headers, body) => fetch(path, {
           method: "POST",
-          body: formData,
-          headers: getAdminKey() ? { "X-Admin-Key": getAdminKey() } : {},
-        });
-
+          body,
+          headers: { ...headers, ...(adminKey ? { "X-Admin-Key": adminKey } : {}) },
+        }),
+        setImportPreflight,
+      );
+      let batchIndex = 0;
+      for await (const res of responses) {
         // 只有最后一批完成后才标记 done,让进度条在多批之间保持运行态。
-        const isLastBatch = i === batches.length - 1;
+        const isLastBatch = ++batchIndex === batches.length;
         if (res.headers.get("content-type")?.includes("text/event-stream")) {
           await readImportSSE(
             res,
@@ -4447,16 +4425,33 @@ export default function Accounts() {
             importedAccountIDs,
             proxySummary,
           );
+          completedBatches++;
         } else {
-          const data = await res.json();
+          const data = res.ok ? await res.json() : await res.json().catch(() => ({}));
           if (!res.ok) {
-            setImportProgress((p) => ({ ...p, show: false }));
-            showToast(
-              data.error
-                ? t("accounts.importFailedWithReason", { error: data.error })
-                : t("accounts.importFailed"),
-              "error",
-            );
+            if (completedBatches > 0) {
+              setImportProgress({ show: true, ...totals, done: true });
+              void reload();
+              showToast(
+                data.error
+                  ? t("accounts.importPartialFailedWithReason", {
+                      completed: completedBatches,
+                      error: data.error,
+                    })
+                  : t("accounts.importPartialFailed", {
+                      completed: completedBatches,
+                    }),
+                "error",
+              );
+            } else {
+              setImportProgress((p) => ({ ...p, show: false }));
+              showToast(
+                data.error
+                  ? t("accounts.importFailedWithReason", { error: data.error })
+                  : t("accounts.importFailed"),
+                "error",
+              );
+            }
             return false;
           }
           totals.current += data.total ?? 0;
@@ -4471,6 +4466,7 @@ export default function Accounts() {
           if (data.warning && !proxySummary.warnings.includes(data.warning)) {
             proxySummary.warnings.push(data.warning);
           }
+          completedBatches++;
           setImportProgress({ show: true, ...totals, done: isLastBatch });
           if (isLastBatch) void reload();
         }
@@ -4499,6 +4495,9 @@ export default function Accounts() {
       }
       return true;
     } catch (error) {
+      if (completedBatches > 0) {
+        void reload();
+      }
       setImportProgress({
         show: true,
         current: Math.max(totals.current, 1),
@@ -4510,7 +4509,12 @@ export default function Accounts() {
         done: true,
       });
       showToast(
-        t("accounts.importFailedWithReason", { error: getErrorMessage(error) }),
+        completedBatches > 0
+          ? t("accounts.importPartialFailedWithReason", {
+              completed: completedBatches,
+              error: getErrorMessage(error),
+            })
+          : t("accounts.importFailedWithReason", { error: getErrorMessage(error) }),
         "error",
       );
       return false;
@@ -4617,12 +4621,12 @@ export default function Accounts() {
         (f) => f.name.split(".").pop()?.toLowerCase() === "json",
       );
 
-      if (jsonFiles.length > 0) {
-        await importFiles(jsonFiles, "json");
-      }
-      if (txtFiles.length > 0) {
-        await importFiles(txtFiles, "txt");
-      }
+      await runMixedAccountImport(
+        jsonFiles.length > 0,
+        txtFiles.length > 0,
+        () => importFiles(jsonFiles, "json"),
+        () => importFiles(txtFiles, "txt"),
+      );
       return;
     }
 
@@ -4642,12 +4646,12 @@ export default function Accounts() {
       }
     }
 
-    if (jsonFiles.length > 0) {
-      await importFiles(jsonFiles, "json");
-    }
-    if (txtFiles.length > 0) {
-      await importFiles(txtFiles, "txt");
-    }
+    await runMixedAccountImport(
+      jsonFiles.length > 0,
+      txtFiles.length > 0,
+      () => importFiles(jsonFiles, "json"),
+      () => importFiles(txtFiles, "txt"),
+    );
   };
 
   const fileImportOptions = {
@@ -4719,14 +4723,16 @@ export default function Accounts() {
       (f) => f.name.split(".").pop()?.toLowerCase() === "json",
     );
 
-    if (jsonFiles.length > 0) {
-      await importFiles(jsonFiles, "json", fileImportOptions);
+    try {
+      await runMixedAccountImport(
+        jsonFiles.length > 0,
+        txtFiles.length > 0,
+        () => importFiles(jsonFiles, "json", fileImportOptions),
+        () => importFiles(txtFiles, "txt", fileImportOptions),
+      );
+    } finally {
+      if (folderInputRef.current) folderInputRef.current.value = "";
     }
-    if (txtFiles.length > 0) {
-      await importFiles(txtFiles, "txt", fileImportOptions);
-    }
-
-    if (folderInputRef.current) folderInputRef.current.value = "";
   };
 
   const handlePasteImport = async () => {
@@ -5341,11 +5347,15 @@ export default function Accounts() {
 
   const handleQuickGroupSave = async () => {
     if (!quickGroupAccount) return;
+    const changes = accountGroupChanges(quickGroupAccount.group_ids ?? [], quickGroupIds);
+    if (!changes.group_ids) {
+      setQuickGroupAccount(null);
+      setQuickGroupIds([]);
+      return;
+    }
     setQuickGroupSubmitting(true);
     try {
-      await api.updateAccountScheduler(quickGroupAccount.id, {
-        group_ids: quickGroupIds,
-      });
+      await api.updateAccountScheduler(quickGroupAccount.id, changes);
       showToast(t("accounts.groupQuickSaveDone"));
       await Promise.all([reload(), reloadGroups()]);
       setQuickGroupAccount(null);
@@ -6063,7 +6073,7 @@ export default function Accounts() {
         allowed_api_key_ids: allowedAPIKeySelection,
         proxy_url: editProxyUrl.trim() || null,
         tags: editTags,
-        group_ids: editGroupIds,
+        ...accountGroupChanges(editingAccount.group_ids ?? [], editGroupIds),
         auto_pause_5h_threshold: percentThresholdInputToRatio(
           editAutoPause5hThresholdInput,
         ),
@@ -6338,14 +6348,19 @@ export default function Accounts() {
           ["antigravity", t("accounts.providerViewAntigravity")],
           ["claude", t("accounts.providerViewClaude")],
           ["kiro", t("accounts.providerViewKiro")],
+          ["opencode", t("accounts.providerViewOpenCode", { defaultValue: "OpenCode" })],
         ] as const
       ).filter(([key]) => visibleChannels.includes(key)),
     [t, visibleChannels],
   );
+  const providerSwitcherMaxWidth = Math.max(260, providerSwitcherOptions.length * 144);
   const providerSwitcher = useMemo(() => (
     <div
-      className="relative grid w-full max-w-[680px] items-center rounded-lg border border-border bg-muted/40 p-0.5"
-      style={{ gridTemplateColumns: `repeat(${providerSwitcherOptions.length}, minmax(0, 1fr))` }}
+      className="relative grid w-full max-w-full items-center rounded-lg border border-border bg-muted/40 p-0.5"
+      style={{
+        maxWidth: `${providerSwitcherMaxWidth}px`,
+        gridTemplateColumns: `repeat(${providerSwitcherOptions.length}, minmax(0, 1fr))`,
+      }}
     >
       <span
         aria-hidden
@@ -6361,8 +6376,9 @@ export default function Accounts() {
           type="button"
           onClick={() => setProviderView(key)}
           aria-pressed={providerView === key}
+          title={label}
           className={cn(
-            "relative z-10 inline-flex min-w-0 items-center justify-center gap-1 rounded-md px-1.5 py-2 text-xs font-semibold transition-all duration-200 active:scale-[0.97] sm:gap-2 sm:px-3 sm:text-sm",
+            "relative z-10 inline-flex min-w-0 items-center justify-center gap-1 rounded-md px-1.5 py-2 text-xs font-semibold transition-all duration-200 active:scale-[0.97] sm:gap-1.5 sm:px-2.5 sm:text-sm",
             providerView === key
               ? "text-foreground"
               : "text-muted-foreground opacity-75 grayscale hover:opacity-100 hover:grayscale-0 hover:text-foreground",
@@ -6373,7 +6389,7 @@ export default function Accounts() {
         </button>
       ))}
     </div>
-  ), [providerView, setProviderView, t, providerSwitcherOptions]);
+  ), [providerView, setProviderView, t, providerSwitcherOptions, providerSwitcherMaxWidth]);
 
   if (providerView === "grok") {
     // key 触发渠道切换时整块内容淡入过渡，切换器由 headerSlot 常驻不闪。
@@ -6432,6 +6448,14 @@ export default function Accounts() {
     return (
       <div key="provider-kiro" className="animate-channel-switch-in">
         <KiroAccounts headerSlot={providerSwitcher} />
+      </div>
+    );
+  }
+
+  if (providerView === "opencode") {
+    return (
+      <div key="provider-opencode" className="animate-channel-switch-in">
+        <OpenCodeAccounts headerSlot={providerSwitcher} />
       </div>
     );
   }
@@ -6502,8 +6526,13 @@ export default function Accounts() {
             actionsBelow
             autoRefresh={accountAutoRefresh}
             titleAdornment={
-              <div className="flex max-w-full flex-wrap items-center gap-2">
-                <div className="min-w-0 max-w-full">{providerSwitcher}</div>
+              <div className="flex w-full max-w-full flex-wrap items-center gap-2">
+                <div
+                  className="w-full min-w-0 max-w-full"
+                  style={{ maxWidth: `${providerSwitcherMaxWidth}px` }}
+                >
+                  {providerSwitcher}
+                </div>
                 <Select
                   className="w-auto shrink-0"
                   compact
@@ -11538,16 +11567,20 @@ export default function Accounts() {
                   className="h-full bg-primary rounded-full transition-all duration-300 ease-out"
                   style={{
                     width:
-                      importProgress.total > 0
-                        ? `${Math.round((importProgress.current / importProgress.total) * 100)}%`
-                        : "0%",
+                      importPreflight
+                        ? `${Math.round((importPreflight.current / importPreflight.total) * 100)}%`
+                        : importProgress.total > 0
+                          ? `${Math.round((importProgress.current / importProgress.total) * 100)}%`
+                          : "0%",
                   }}
                 />
               </div>
               <div className="text-center text-sm text-muted-foreground">
-                {importProgress.total > 0
-                  ? `${importProgress.current} / ${importProgress.total}  (${Math.round((importProgress.current / importProgress.total) * 100)}%)`
-                  : t("accounts.importPreparing")}
+                {importPreflight
+                  ? `${t("accounts.importPreparing")} ${importPreflight.current} / ${importPreflight.total}`
+                  : importProgress.total > 0
+                    ? `${importProgress.current} / ${importProgress.total}  (${Math.round((importProgress.current / importProgress.total) * 100)}%)`
+                    : t("accounts.importPreparing")}
               </div>
               <div className="grid grid-cols-4 gap-2 text-center">
                 <div className="rounded-xl bg-emerald-500/10 px-2 py-2">
@@ -12856,26 +12889,6 @@ function getSchedulerPriority(account: AccountRow): number {
     : 0;
 }
 
-// UsingCreditsBadge 紧跟在限流徽章后面：账号显示仍是「限流」（用量窗口客观上确实打满了），
-// 这个积分徽章表示"正在用积分顶替限流，因此仍在参与调度"。
-// 后端 using_credits 已经算过全部前提（两个开关 + 当下确有余额 + 窗口真打满），
-// 这里只负责显示，不重算，避免两边判定漂移。
-function UsingCreditsBadge({ account }: { account: AccountRow }) {
-  const { t } = useTranslation();
-  if (!account.using_credits) return null;
-  // 纯图标：余额已经在邮箱下方的徽章里显示过，这里再写一遍是重复信息，
-  // 而且会把「限流 | 7d」和倒计时之间撑开。语义靠 title / aria-label 承载。
-  return (
-    <span
-      className="inline-flex size-5 shrink-0 items-center justify-center rounded-md border border-teal-500/30 bg-teal-500/10 text-teal-700 dark:text-teal-300"
-      title={t("accounts.usingCreditsBadgeTooltip")}
-      aria-label={t("accounts.usingCreditsBadge")}
-    >
-      <Coins className="size-3" />
-    </span>
-  );
-}
-
 function SchedulerPriorityBadge({ account }: { account: AccountRow }) {
   const { t } = useTranslation();
   const priority = getSchedulerPriority(account);
@@ -12937,10 +12950,6 @@ function isActiveAutoPauseWindowReached(
 
 // Plans that carry a rolling 5h usage window (mirrors Go isPremium5hPlan).
 // k12/edu are paid education workspaces with 5h limits (issue #307/#309).
-function isSparkUsagePlan(planType?: string): boolean {
-  return normalizePlanType(planType) === "pro";
-}
-
 function isPremiumUsagePlan(planType?: string): boolean {
   return [
     "plus",
@@ -13945,17 +13954,7 @@ function AccountMobileCard({
                 </>
               )}
               <DaybreakBadge models={account.daybreak_models} />
-              {isFullCard && resetCredits > 0 && (
-                <button
-                  type="button"
-                  onClick={onUsage}
-                  className="codex-account-card__flag codex-account-card__flag--clickable"
-                  title={t("accounts.resetCreditsBadge", { count: resetCredits })}
-                >
-                  <RotateCcw className="size-3" />
-                  {resetCredits}
-                </button>
-              )}
+              {isFullCard && <AccountResetCreditBadge count={resetCredits} onClick={onUsage} />}
               {isFullCard && creditBalance !== null && (
                 <button
                   type="button"
@@ -14927,23 +14926,6 @@ function AccountStatusCountdown({ account }: { account: AccountRow }) {
   const until = getAccountStatusCountdownUntil(account);
   if (!until) return null;
   return <CooldownTimer until={until} />;
-}
-
-// 冷却倒计时组件
-function CooldownTimer({ until }: { until: string }) {
-  const remaining = useCountdownRemaining(until);
-  const title = formatBeijingTime(until);
-
-  if (!remaining) return null;
-  return (
-    <span
-      className="inline-flex h-6 min-w-[112px] shrink-0 items-center justify-center gap-1.5 rounded-full bg-amber-50 px-2 text-[11px] font-mono leading-none tabular-nums text-amber-700 ring-1 ring-inset ring-amber-200/70 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-400/20"
-      title={title}
-    >
-      <Hourglass className="size-3 shrink-0" aria-hidden="true" />
-      {remaining}
-    </span>
-  );
 }
 
 // 自助提交待审核面板:列出 enabled=false 且带 self-service 标签的账号,

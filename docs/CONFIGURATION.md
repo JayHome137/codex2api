@@ -140,6 +140,12 @@ Antigravity 渠道的首绑 / Fresh 选号默认启用加权避险：候选账�
 |------|------|--------|------|
 | `ANTIGRAVITY_BALANCED_AFFINITY` | 否 | `true` | 加权避险开关。取 `0` / `false` / `off` / `none` / `no`（大小写不敏感）时关闭，回退为原有 round-robin；其它值按开启处理。进程启动时读取一次，改动需重启生效。冷却正确性修复不受该开关影响、始终生效：public / wire 冷却写入（Gemini 配额耗尽时追加 family 键）、共享 wire / family 冷却不被更短事件缩短、跨实例冷却过滤（Antigravity 候选查三键） |
 
+### OpenCode 上游配置
+
+| 变量 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `OPENCODE_USER_AGENT_VERSION` | 否 | `1.19.6` | OpenCode 上游请求（模型同步、Go 用量查询与代理转发）默认发送的 `User-Agent: opencode/<version>` 版本号，用于通过 Cloudflare WAF 校验；若账号自定义请求头中显式配置了 `User-Agent`，以账号配置为准 |
+
 ### 数据库配置
 
 #### PostgreSQL 模式
@@ -376,7 +382,9 @@ Codex 瞬时账号限流按 `15s → 30s → 60s → 120s → 240s → 300s` 退
 
 启用后，类别、精确 HTTP 状态码或精确上游错误代码任一命中即可持续重试；`http_4xx`、403、404、上下文错误以及“全部 `response.failed`”等宽泛或确定性故障需要管理员显式选择，501 则已由默认的 `http_5xx` 类别覆盖。普通自选模式不会把未选中的 `invalid_request` 或结构化安全策略拒绝自动升级为无限重试。
 
-`catch_all` 是默认关闭的超级模式。开启后不再依赖已知类别或错误码清单；除明确的上游 `cyber_policy` 外，任何真实上游 HTTP、传输、流读取、`error`、`response.failed` 或未知失败都会进入持续重试，包括永久额度、余额、鉴权、无效请求和其他结构化安全策略错误。明确的上游 `cyber_policy` 始终终止当前请求，不换号、不重放。文本推理只接受上游 HTTP `200` 及协议正常终态；其他状态、失败终态及无终态 EOF 都会丢弃整次尝试并继续。管理界面的超级开关会在一次保存中同时设置 `enabled=true` 和 `catch_all=true`；关闭总开关会同步清除 `catch_all`，避免隐藏启用。
+`catch_all` 是默认关闭的超级模式。开启后不再依赖已知类别或错误码清单；除明确的上游 `cyber_policy` 和已识别的无效输入图片终态外，任何真实上游 HTTP、传输、流读取、`error`、`response.failed` 或未知失败都会进入持续重试，包括永久额度、余额、鉴权、无效请求和其他结构化安全策略错误。明确的上游 `cyber_policy` 始终终止当前请求，不换号、不重放。文本推理只接受上游 HTTP `200` 及协议正常终态；其他状态、失败终态及无终态 EOF 都会丢弃整次尝试并继续。管理界面的超级开关会在一次保存中同时设置 `enabled=true` 和 `catch_all=true`；关闭总开关会同步清除 `catch_all`，避免隐藏启用。
+
+无效输入图片终态只匹配结构化 `invalid_request_error` / `invalid_value` / `param=input`，且消息为 `The image data you provided does not represent a valid image.`（可带 `Please check your input and try again.`）。HTTP、流内错误和 Images 均停止重试，即使显式选择400、该错误码或超级模式也不例外。其他 `invalid_value`、通用400和瞬态错误沿用既有策略；网关不会删除或修复请求里的图片。
 
 持续重试会把每次流式上游尝试完整暂存；失败整次丢弃，正常终态才一次性回放。目标端点等待上游响应头、读取响应体或流数据时保持下游连接：Responses、Chat Completions 和 Images 在首个保活周期到达时建立 SSE 200 并发送 `: keepalive` 注释，Messages 发送 Anthropic 原生 `event: ping`；Responses、Realtime 与 Live Sideband WebSocket 使用 Ping 控制帧。原生 Grok SSE 仍保留上游帧格式并允许插入保活帧。心跳提交 SSE 后，随后的上游错误会使用协议错误事件，不再改变 HTTP 200。非流式 JSON（包括 relay/native Responses、compact、Grok 图片和 Alpha Search，但不包括 Codex/GPT Images）使用标准 HTTP `102 Processing` 信息响应，不提交最终状态或 JSON；Cloudflare 收到 102 后仍要求在 125 秒内收到最终响应，因此它只能延长等待，不是无限期保活。`max_duration_seconds` 设置无限预算的墙钟时间上限（默认 600 秒，范围 1 到 900 秒），从请求第一次进入无限重试时开始，后续尝试不会重置。期限到达会立即取消上游并返回最近一次真实上游失败；仅在尚无失败可返回时使用 `504 upstream_timeout`。普通自选模式不会无限重试未选中的结构化安全策略拒绝；`catch_all` 可覆盖其他拒绝，但不能覆盖明确的上游 `cyber_policy` 或本地重试期限。
 
@@ -712,9 +720,17 @@ curl -H "X-Admin-Key: your-secret" http://localhost:8080/api/admin/ops/overview
 - `REDIS_ADDR is empty` - Redis 模式下未配置 Redis 地址
 - `DATABASE_PATH is empty` - SQLite 模式下未配置数据路径
 
-### 惰性模式下的 Codex 授权保活
+### 惰性模式下的 OAuth 授权保活（Codex / Claude）
 
 管理设置 `codex_oauth_keepalive_enabled`（默认 `false`）允许惰性模式单独运行 Codex Token 续期。它使用现有 `background_refresh_interval_minutes` 巡检间隔和 AT 到期前 5 分钟的阈值，不改变额度冷却、不启用生成探针，也不影响 Claude、Grok 或 Antigravity 的刷新策略。普通模式本来就运行 Codex 续期，不依赖此开关。
+
+管理设置 `claude_oauth_keepalive_enabled`（默认 `false`）允许惰性模式单独维护 Claude OAuth 账号授权：
+
+- 仅对带有有效 Refresh Token 的 Claude OAuth 账号执行，自动跳过 API Key、Setup Token、人工停用（禁用调度）以及已确认永久失效的账号。
+- 复用现有 `background_refresh_interval_minutes` 巡检间隔，在 AT 到期前 30 分钟内触发续期，并在 5h/7d 限流冷却期间保留原有冷却状态不变，不触发用量/恢复/生成探针，也不影响 Codex、Grok、Antigravity 或 Kiro。
+- 复用跨实例共享 OAuth 刷新租约与不可取消落库重试，避免后台保活与请求触发的按需刷新并发消费同一 RT。
+- 区分可重试的网络/限流/5xx 错误（指数退避并尊重 429 `Retry-After`，不误标封禁）与明确的永久 OAuth 失败（如 `invalid_grant`），账号详情页展示脱敏后的最近续期时间、提示与下次自动重试时间。
+- 后台静默时段（`background_quiet_hours`）优先级高于 OAuth 保活：静默期间会暂停 Codex/Claude 后台续期；若静默时长覆盖 Claude AT 有效期，AT 会在静默结束后或首次业务请求时按需续期。
 
 Codex 刷新新增 `codex_oauth_refresh_attempts` 保护表，启动时自动创建，兼容 PostgreSQL 与 SQLite。表内只保存旧 RT 的 SHA-256 指纹、刷新操作 ID 和开始时间，不保存明文 Token。成功保存全部相关凭据后删除记录；结果不确定的记录保留，防止跨实例或重启后重复消费旧 RT。已有凭据无需重新导入；已经失效的授权需重新登录恢复。
 
